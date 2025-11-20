@@ -1,5 +1,5 @@
 import polars as pl
-from vec_ops import *
+from polars_vec_ops import *
 
 df = pl.DataFrame({
     'a': [1, 1, None],

@@ -1,8 +1,9 @@
 import time
 
 import polars as pl
-import vec_ops  # noqa
 import pytest
+
+import polars_vec_ops  # noqa
 
 
 def test_vec_sum():
@@ -10,7 +11,7 @@ def test_vec_sum():
     df = pl.DataFrame({
         "a": [[0, 1, 2], [1, 2, 3]]
     })
-    result = df.select(pl.col("a").vec_ops.sum())
+    result = df.select(pl.col("a").vec.sum())
     print(result)
     
     # Expect a single row with [1, 3, 5]
@@ -23,7 +24,7 @@ def test_vec_sum_multiple_rows():
     df = pl.DataFrame({
         "a": [[1, 2, 3], [4, 5, 6], [7, 8, 9]]
     })
-    result = df.select(pl.col("a").vec_ops.sum())
+    result = df.select(pl.col("a").vec.sum())
     print(result)
     
     # Expect a single row with [12, 15, 18]
@@ -36,7 +37,7 @@ def test_vec_sum_single_row():
     df = pl.DataFrame({
         "a": [[10, 20, 30]]
     })
-    result = df.select(pl.col("a").vec_ops.sum())
+    result = df.select(pl.col("a").vec.sum())
     print(result)
     
     # Expect a single row with the same values
@@ -51,7 +52,7 @@ def test_vec_sum_mismatch():
     })
     
     with pytest.raises(Exception) as exc_info:
-        df.select(pl.col("a").vec_ops.sum()).collect()
+        df.select(pl.col("a").vec.sum()).collect()
     
     print(f"Caught expected error: {exc_info.value}")
     assert "same length" in str(exc_info.value).lower()
@@ -62,7 +63,7 @@ def test_vec_sum_floats():
     df = pl.DataFrame({
         "a": [[1.5, 2.5, 3.5], [0.5, 1.5, 2.5]]
     })
-    result = df.select(pl.col("a").vec_ops.sum())
+    result = df.select(pl.col("a").vec.sum())
     print(result)
     
     # Expect a single row with [2.0, 4.0, 6.0]
@@ -76,7 +77,7 @@ def test_vec_sum_type_preservation():
     df_int = pl.DataFrame({
         "a": [[0, 1, 2], [1, 2, 3]]
     })
-    result_int = df_int.select(pl.col("a").vec_ops.sum())
+    result_int = df_int.select(pl.col("a").vec.sum())
     print(f"\nInteger input dtype: {df_int['a'].dtype}")
     print(f"Integer result dtype: {result_int['a'].dtype}")
     print(f"Integer result: {result_int}")
@@ -89,7 +90,7 @@ def test_vec_sum_type_preservation():
     df_float = pl.DataFrame({
         "a": [[0.5, 1.5, 2.5], [1.5, 2.5, 3.5]]
     })
-    result_float = df_float.select(pl.col("a").vec_ops.sum())
+    result_float = df_float.select(pl.col("a").vec.sum())
     print(f"\nFloat input dtype: {df_float['a'].dtype}")
     print(f"Float result dtype: {result_float['a'].dtype}")
     print(f"Float result: {result_float}")
@@ -127,7 +128,7 @@ def test_vec_sum_performance():
     df_simple = df.select("values")
     
     start = time.perf_counter()
-    result_vec_ops_simple = df_simple.select(pl.col("values").vec_ops.sum())
+    result_vec_ops_simple = df_simple.select(pl.col("values").vec.sum())
     time_vec_ops_simple = time.perf_counter() - start
     
     start = time.perf_counter()
@@ -151,7 +152,7 @@ def test_vec_sum_performance():
     result_vec_ops = (
         df
         .group_by("group", maintain_order=True)
-        .agg(pl.col("values").vec_ops.sum())
+        .agg(pl.col("values").vec.sum())
     )
     time_vec_ops = time.perf_counter() - start
     
@@ -189,7 +190,7 @@ def test_vec_mean():
     df = pl.DataFrame({
         "a": [[1, 2, 3], [3, 4, 5]]
     })
-    result = df.select(pl.col("a").vec_ops.mean())
+    result = df.select(pl.col("a").vec.mean())
     print(result)
     
     # Expect a single row with [2.0, 3.0, 4.0]
@@ -202,7 +203,7 @@ def test_vec_mean_multiple_rows():
     df = pl.DataFrame({
         "a": [[1, 2, 3], [4, 5, 6], [7, 8, 9]]
     })
-    result = df.select(pl.col("a").vec_ops.mean())
+    result = df.select(pl.col("a").vec.mean())
     print(result)
     
     # Expect a single row with [4.0, 5.0, 6.0]
@@ -215,7 +216,7 @@ def test_vec_mean_single_row():
     df = pl.DataFrame({
         "a": [[10.0, 20.0, 30.0]]
     })
-    result = df.select(pl.col("a").vec_ops.mean())
+    result = df.select(pl.col("a").vec.mean())
     print(result)
     
     # Expect a single row with the same values
@@ -228,8 +229,8 @@ def test_vec_avg_alias():
     df = pl.DataFrame({
         "a": [[1, 2, 3], [3, 4, 5]]
     })
-    result_mean = df.select(pl.col("a").vec_ops.mean())
-    result_avg = df.select(pl.col("a").vec_ops.avg())
+    result_mean = df.select(pl.col("a").vec.mean())
+    result_avg = df.select(pl.col("a").vec.avg())
     
     assert result_mean["a"][0].to_list() == result_avg["a"][0].to_list()
 
@@ -239,7 +240,7 @@ def test_vec_min():
     df = pl.DataFrame({
         "a": [[3, 5, 2], [1, 7, 4]]
     })
-    result = df.select(pl.col("a").vec_ops.min())
+    result = df.select(pl.col("a").vec.min())
     print(result)
     
     # Expect a single row with [1, 5, 2]
@@ -252,7 +253,7 @@ def test_vec_min_multiple_rows():
     df = pl.DataFrame({
         "a": [[5, 10, 3], [2, 8, 1], [7, 6, 4]]
     })
-    result = df.select(pl.col("a").vec_ops.min())
+    result = df.select(pl.col("a").vec.min())
     print(result)
     
     # Expect a single row with [2, 6, 1]
@@ -265,7 +266,7 @@ def test_vec_min_floats():
     df = pl.DataFrame({
         "a": [[1.5, 2.5, 3.5], [0.5, 3.5, 2.5]]
     })
-    result = df.select(pl.col("a").vec_ops.min())
+    result = df.select(pl.col("a").vec.min())
     print(result)
     
     # Expect a single row with [0.5, 2.5, 2.5]
@@ -278,7 +279,7 @@ def test_vec_max():
     df = pl.DataFrame({
         "a": [[3, 5, 2], [1, 7, 4]]
     })
-    result = df.select(pl.col("a").vec_ops.max())
+    result = df.select(pl.col("a").vec.max())
     print(result)
     
     # Expect a single row with [3, 7, 4]
@@ -291,7 +292,7 @@ def test_vec_max_multiple_rows():
     df = pl.DataFrame({
         "a": [[5, 10, 3], [2, 8, 1], [7, 6, 4]]
     })
-    result = df.select(pl.col("a").vec_ops.max())
+    result = df.select(pl.col("a").vec.max())
     print(result)
     
     # Expect a single row with [7, 10, 4]
@@ -304,7 +305,7 @@ def test_vec_max_floats():
     df = pl.DataFrame({
         "a": [[1.5, 2.5, 3.5], [0.5, 3.5, 2.5]]
     })
-    result = df.select(pl.col("a").vec_ops.max())
+    result = df.select(pl.col("a").vec.max())
     print(result)
     
     # Expect a single row with [1.5, 3.5, 3.5]
@@ -317,7 +318,7 @@ def test_vec_diff():
     df = pl.DataFrame({
         "a": [[5, 10, 15], [2, 15, 5], [0, 0, 0]]
     })
-    result = df.select(pl.col("a").vec_ops.diff())
+    result = df.select(pl.col("a").vec.diff())
     print(result)
     
     # Expect 3 rows: first is list of nulls, then differences
@@ -332,7 +333,7 @@ def test_vec_diff_two_rows():
     df = pl.DataFrame({
         "a": [[10, 20, 30], [5, 15, 25]]
     })
-    result = df.select(pl.col("a").vec_ops.diff())
+    result = df.select(pl.col("a").vec.diff())
     print(result)
     
     # Expect 2 rows: first is list of nulls, second is diff
@@ -346,7 +347,7 @@ def test_vec_diff_single_row():
     df = pl.DataFrame({
         "a": [[10, 20, 30]]
     })
-    result = df.select(pl.col("a").vec_ops.diff())
+    result = df.select(pl.col("a").vec.diff())
     print(result)
     
     # Expect 1 row with list of nulls (no previous row to diff against)
@@ -359,7 +360,7 @@ def test_vec_diff_floats():
     df = pl.DataFrame({
         "a": [[1.5, 2.5, 3.5], [1.0, 2.0, 3.0]]
     })
-    result = df.select(pl.col("a").vec_ops.diff())
+    result = df.select(pl.col("a").vec.diff())
     print(result)
     
     # Expect 2 rows: first is list of nulls, second is diff
@@ -373,7 +374,7 @@ def test_vec_diff_with_nulls():
     df = pl.DataFrame({
         "a": [[5, 10, 15], None, [0, 0, 0]]
     })
-    result = df.select(pl.col("a").vec_ops.diff())
+    result = df.select(pl.col("a").vec.diff())
     print(result)
     
     # Expect 3 rows: first is list of nulls, second is list of nulls (curr is null),
@@ -389,7 +390,7 @@ def test_vec_sum_with_nulls():
     df = pl.DataFrame({
         "a": [[1, 2, 3], None, [4, 5, 6]]
     })
-    result = df.select(pl.col("a").vec_ops.sum())
+    result = df.select(pl.col("a").vec.sum())
     print(result)
     
     # Expect sum of non-null rows: [5, 7, 9]
@@ -402,7 +403,7 @@ def test_vec_mean_with_nulls():
     df = pl.DataFrame({
         "a": [[2, 4, 6], None, [4, 6, 8]]
     })
-    result = df.select(pl.col("a").vec_ops.mean())
+    result = df.select(pl.col("a").vec.mean())
     print(result)
     
     # Expect mean of non-null rows: [3.0, 5.0, 7.0]
@@ -415,7 +416,7 @@ def test_vec_min_with_nulls():
     df = pl.DataFrame({
         "a": [[5, 10, 3], None, [2, 8, 7]]
     })
-    result = df.select(pl.col("a").vec_ops.min())
+    result = df.select(pl.col("a").vec.min())
     print(result)
     
     # Expect min of non-null rows: [2, 8, 3]
@@ -428,7 +429,7 @@ def test_vec_max_with_nulls():
     df = pl.DataFrame({
         "a": [[5, 10, 3], None, [2, 8, 7]]
     })
-    result = df.select(pl.col("a").vec_ops.max())
+    result = df.select(pl.col("a").vec.max())
     print(result)
     
     # Expect max of non-null rows: [5, 10, 7]
@@ -442,7 +443,7 @@ def test_vec_sum_with_arrays():
         "a": [[1, 2, 3], [4, 5, 6]]
     }).select(pl.col("a").cast(pl.Array(pl.Int64, 3)))
     
-    result = df.select(pl.col("a").vec_ops.sum())
+    result = df.select(pl.col("a").vec.sum())
     print(result)
     
     # Should return Array dtype
@@ -456,7 +457,7 @@ def test_vec_mean_with_arrays():
         "a": [[2, 4, 6], [4, 6, 8]]
     }).select(pl.col("a").cast(pl.Array(pl.Int64, 3)))
     
-    result = df.select(pl.col("a").vec_ops.mean())
+    result = df.select(pl.col("a").vec.mean())
     print(result)
     
     # Should return Array[Float64]
@@ -470,7 +471,7 @@ def test_vec_min_with_arrays():
         "a": [[5, 10, 3], [2, 8, 7]]
     }).select(pl.col("a").cast(pl.Array(pl.Int64, 3)))
     
-    result = df.select(pl.col("a").vec_ops.min())
+    result = df.select(pl.col("a").vec.min())
     print(result)
     
     # Should return Array dtype with same inner type
@@ -484,7 +485,7 @@ def test_vec_max_with_arrays():
         "a": [[5, 10, 3], [2, 8, 7]]
     }).select(pl.col("a").cast(pl.Array(pl.Int64, 3)))
     
-    result = df.select(pl.col("a").vec_ops.max())
+    result = df.select(pl.col("a").vec.max())
     print(result)
     
     # Should return Array dtype with same inner type
@@ -498,7 +499,7 @@ def test_vec_diff_with_arrays():
         "a": [[5, 10, 15], [0, 5, 10], [1, 2, 3]]
     }).select(pl.col("a").cast(pl.Array(pl.Int64, 3)))
     
-    result = df.select(pl.col("a").vec_ops.diff())
+    result = df.select(pl.col("a").vec.diff())
     print(result)
     
     # Should return Array dtype with same inner type
@@ -514,7 +515,7 @@ def test_vec_sum_with_null_elements():
     df = pl.DataFrame({
         "a": [[1, None, 3], [4, 5, None], [None, 2, 1]]
     })
-    result = df.select(pl.col("a").vec_ops.sum())
+    result = df.select(pl.col("a").vec.sum())
     print(result)
     
     # Expect sum ignoring nulls: [5, 7, 4]
@@ -527,7 +528,7 @@ def test_vec_mean_with_null_elements():
     df = pl.DataFrame({
         "a": [[2, None, 6], [4, 6, None], [None, 3, 9]]
     })
-    result = df.select(pl.col("a").vec_ops.mean())
+    result = df.select(pl.col("a").vec.mean())
     print(result)
     
     # Position 0: (2+4)/2 = 3.0
@@ -542,7 +543,7 @@ def test_vec_min_with_null_elements():
     df = pl.DataFrame({
         "a": [[5, None, 3], [None, 8, 7], [2, 10, None]]
     })
-    result = df.select(pl.col("a").vec_ops.min())
+    result = df.select(pl.col("a").vec.min())
     print(result)
     
     # Position 0: min(5, 2) = 2
@@ -557,7 +558,7 @@ def test_vec_max_with_null_elements():
     df = pl.DataFrame({
         "a": [[5, None, 3], [None, 8, 7], [2, 10, None]]
     })
-    result = df.select(pl.col("a").vec_ops.max())
+    result = df.select(pl.col("a").vec.max())
     print(result)
     
     # Position 0: max(5, 2) = 5

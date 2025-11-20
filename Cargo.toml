@@ -1,10 +1,10 @@
 [package]
-name = "vec-ops"
+name = "polars-vec-ops"
 version = "0.1.0"
 edition = "2021"
 
 [lib]
-name = "vec_ops"
+name = "polars_vec_ops"
 crate-type= ["cdylib"]
 
 [dependencies]

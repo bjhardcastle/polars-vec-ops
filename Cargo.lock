@@ -1823,6 +1823,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "polars-vec-ops"
+version = "0.1.0"
+dependencies = [
+ "polars",
+ "polars-arrow",
+ "pyo3",
+ "pyo3-polars",
+ "serde",
+]
+
+[[package]]
 name = "portable-atomic"
 version = "1.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2902,17 +2913,6 @@ dependencies = [
  "js-sys",
  "serde",
  "wasm-bindgen",
-]
-
-[[package]]
-name = "vec-ops"
-version = "0.1.0"
-dependencies = [
- "polars",
- "polars-arrow",
- "pyo3",
- "pyo3-polars",
- "serde",
 ]
 
 [[package]]

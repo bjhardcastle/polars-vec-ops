@@ -6,17 +6,17 @@ from typing import TYPE_CHECKING
 import polars as pl
 from polars.plugins import register_plugin_function
 
-from vec_ops._internal import __version__ as __version__
+from polars_vec_ops._internal import __version__ as __version__
 
 if TYPE_CHECKING:
-    from vec_ops.typing import IntoExprColumn
+    from polars_vec_ops.typing import IntoExprColumn
 
 LIB = Path(__file__).parent
 
 
 
 
-@pl.api.register_expr_namespace("vec_ops")
+@pl.api.register_expr_namespace("vec")
 class VecOpsNamespace:
     """Custom namespace for vertical list operations."""
     
@@ -35,7 +35,7 @@ class VecOpsNamespace:
         Examples
         --------
         >>> df = pl.DataFrame({"a": [[0, 1, 2], [1, 2, 3]]})
-        >>> df.select(pl.col("a").vec_ops.sum())
+        >>> df.select(pl.col("a").vec.sum())
         shape: (1, 1)
         ┌───────────┐
         │ a         │
@@ -70,7 +70,7 @@ class VecOpsNamespace:
         Examples
         --------
         >>> df = pl.DataFrame({"a": [[1, 2, 3], [3, 4, 5]]})
-        >>> df.select(pl.col("a").vec_ops.mean())
+        >>> df.select(pl.col("a").vec.mean())
         shape: (1, 1)
         ┌─────────────┐
         │ a           │
@@ -114,7 +114,7 @@ class VecOpsNamespace:
         Examples
         --------
         >>> df = pl.DataFrame({"a": [[3, 5, 2], [1, 7, 4]]})
-        >>> df.select(pl.col("a").vec_ops.min())
+        >>> df.select(pl.col("a").vec.min())
         shape: (1, 1)
         ┌───────────┐
         │ a         │
@@ -149,7 +149,7 @@ class VecOpsNamespace:
         Examples
         --------
         >>> df = pl.DataFrame({"a": [[3, 5, 2], [1, 7, 4]]})
-        >>> df.select(pl.col("a").vec_ops.max())
+        >>> df.select(pl.col("a").vec.max())
         shape: (1, 1)
         ┌───────────┐
         │ a         │
@@ -188,7 +188,7 @@ class VecOpsNamespace:
         Examples
         --------
         >>> df = pl.DataFrame({"a": [[5, 10, 15], [2, 15, 5], [0, 0, 0]]})
-        >>> df.select(pl.col("a").vec_ops.diff())
+        >>> df.select(pl.col("a").vec.diff())
         shape: (3, 1)
         ┌────────────────────┐
         │ a                  │
