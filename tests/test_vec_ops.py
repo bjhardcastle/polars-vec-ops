@@ -1,7 +1,8 @@
-import polars as pl
-import pytest
 import time
-import vec_ops  # Register the vec_ops namespace
+
+import polars as pl
+import vec_ops  # noqa
+import pytest
 
 
 def test_vec_sum():
@@ -183,7 +184,185 @@ def test_vec_sum_performance():
         for v1, v2 in zip(vec_ops_vals, manual_vals):
             assert abs(v1 - v2) < 1e-10, f"Mismatch: {v1} vs {v2}"
     
+def test_vec_mean():
+    """Test vertical mean across list elements."""
+    df = pl.DataFrame({
+        "a": [[1, 2, 3], [3, 4, 5]]
+    })
+    result = df.select(pl.col("a").vec_ops.mean())
+    print(result)
+    
+    # Expect a single row with [2.0, 3.0, 4.0]
+    assert len(result) == 1
+    assert result["a"][0].to_list() == [2.0, 3.0, 4.0]
 
+
+def test_vec_mean_multiple_rows():
+    """Test vertical mean with more than 2 rows."""
+    df = pl.DataFrame({
+        "a": [[1, 2, 3], [4, 5, 6], [7, 8, 9]]
+    })
+    result = df.select(pl.col("a").vec_ops.mean())
+    print(result)
+    
+    # Expect a single row with [4.0, 5.0, 6.0]
+    assert len(result) == 1
+    assert result["a"][0].to_list() == [4.0, 5.0, 6.0]
+
+
+def test_vec_mean_single_row():
+    """Test vertical mean with a single row."""
+    df = pl.DataFrame({
+        "a": [[10.0, 20.0, 30.0]]
+    })
+    result = df.select(pl.col("a").vec_ops.mean())
+    print(result)
+    
+    # Expect a single row with the same values
+    assert len(result) == 1
+    assert result["a"][0].to_list() == [10.0, 20.0, 30.0]
+
+
+def test_vec_avg_alias():
+    """Test that avg is an alias for mean."""
+    df = pl.DataFrame({
+        "a": [[1, 2, 3], [3, 4, 5]]
+    })
+    result_mean = df.select(pl.col("a").vec_ops.mean())
+    result_avg = df.select(pl.col("a").vec_ops.avg())
+    
+    assert result_mean["a"][0].to_list() == result_avg["a"][0].to_list()
+
+
+def test_vec_min():
+    """Test vertical min across list elements."""
+    df = pl.DataFrame({
+        "a": [[3, 5, 2], [1, 7, 4]]
+    })
+    result = df.select(pl.col("a").vec_ops.min())
+    print(result)
+    
+    # Expect a single row with [1, 5, 2]
+    assert len(result) == 1
+    assert result["a"][0].to_list() == [1, 5, 2]
+
+
+def test_vec_min_multiple_rows():
+    """Test vertical min with more than 2 rows."""
+    df = pl.DataFrame({
+        "a": [[5, 10, 3], [2, 8, 1], [7, 6, 4]]
+    })
+    result = df.select(pl.col("a").vec_ops.min())
+    print(result)
+    
+    # Expect a single row with [2, 6, 1]
+    assert len(result) == 1
+    assert result["a"][0].to_list() == [2, 6, 1]
+
+
+def test_vec_min_floats():
+    """Test vertical min with float lists."""
+    df = pl.DataFrame({
+        "a": [[1.5, 2.5, 3.5], [0.5, 3.5, 2.5]]
+    })
+    result = df.select(pl.col("a").vec_ops.min())
+    print(result)
+    
+    # Expect a single row with [0.5, 2.5, 2.5]
+    assert len(result) == 1
+    assert result["a"][0].to_list() == [0.5, 2.5, 2.5]
+
+
+def test_vec_max():
+    """Test vertical max across list elements."""
+    df = pl.DataFrame({
+        "a": [[3, 5, 2], [1, 7, 4]]
+    })
+    result = df.select(pl.col("a").vec_ops.max())
+    print(result)
+    
+    # Expect a single row with [3, 7, 4]
+    assert len(result) == 1
+    assert result["a"][0].to_list() == [3, 7, 4]
+
+
+def test_vec_max_multiple_rows():
+    """Test vertical max with more than 2 rows."""
+    df = pl.DataFrame({
+        "a": [[5, 10, 3], [2, 8, 1], [7, 6, 4]]
+    })
+    result = df.select(pl.col("a").vec_ops.max())
+    print(result)
+    
+    # Expect a single row with [7, 10, 4]
+    assert len(result) == 1
+    assert result["a"][0].to_list() == [7, 10, 4]
+
+
+def test_vec_max_floats():
+    """Test vertical max with float lists."""
+    df = pl.DataFrame({
+        "a": [[1.5, 2.5, 3.5], [0.5, 3.5, 2.5]]
+    })
+    result = df.select(pl.col("a").vec_ops.max())
+    print(result)
+    
+    # Expect a single row with [1.5, 3.5, 3.5]
+    assert len(result) == 1
+    assert result["a"][0].to_list() == [1.5, 3.5, 3.5]
+
+
+def test_vec_diff():
+    """Test vertical diff across list elements."""
+    df = pl.DataFrame({
+        "a": [[5, 10, 15], [2, 15, 5], [0, 0, 0]]
+    })
+    result = df.select(pl.col("a").vec_ops.diff())
+    print(result)
+    
+    # Expect 2 rows (n-1): [[-3, 5, -10], [-2, -15, -5]]
+    assert len(result) == 2
+    assert result["a"][0].to_list() == [-3, 5, -10]
+    assert result["a"][1].to_list() == [-2, -15, -5]
+
+
+def test_vec_diff_two_rows():
+    """Test vertical diff with just two rows."""
+    df = pl.DataFrame({
+        "a": [[10, 20, 30], [5, 15, 25]]
+    })
+    result = df.select(pl.col("a").vec_ops.diff())
+    print(result)
+    
+    # Expect 1 row: [[-5, -5, -5]]
+    assert len(result) == 1
+    assert result["a"][0].to_list() == [-5, -5, -5]
+
+
+def test_vec_diff_single_row():
+    """Test vertical diff with a single row returns empty."""
+    df = pl.DataFrame({
+        "a": [[10, 20, 30]]
+    })
+    result = df.select(pl.col("a").vec_ops.diff())
+    print(result)
+    
+    # Expect 0 rows (no differences with 1 row)
+    assert len(result) == 0
+
+
+def test_vec_diff_floats():
+    """Test vertical diff with float lists."""
+    df = pl.DataFrame({
+        "a": [[1.5, 2.5, 3.5], [1.0, 2.0, 3.0]]
+    })
+    result = df.select(pl.col("a").vec_ops.diff())
+    print(result)
+    
+    # Expect 1 row: [[-0.5, -0.5, -0.5]]
+    assert len(result) == 1
+    assert result["a"][0].to_list() == [-0.5, -0.5, -0.5]
+    
 
 if __name__ == "__main__":
     pytest.main([__file__, '-s', '-v'])

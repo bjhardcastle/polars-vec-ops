@@ -52,3 +52,153 @@ class VecOpsNamespace:
             is_elementwise=False,
             returns_scalar=True,
         )
+    
+    def mean(self) -> pl.Expr:
+        """
+        Calculate mean across rows for list columns (vertical aggregation).
+        
+        Returns a single row with a list where each element is the mean
+        of elements at that position across all input lists.
+        
+        All lists must have the same length.
+        
+        Returns
+        -------
+        pl.Expr
+            Expression returning a list of Float64 values.
+        
+        Examples
+        --------
+        >>> df = pl.DataFrame({"a": [[1, 2, 3], [3, 4, 5]]})
+        >>> df.select(pl.col("a").vec_ops.mean())
+        shape: (1, 1)
+        ┌─────────────┐
+        │ a           │
+        │ ---         │
+        │ list[f64]   │
+        ╞═════════════╡
+        │ [2.0, 3.0, 4.0] │
+        └─────────────┘
+        """
+        return register_plugin_function(
+            args=[self._expr],
+            plugin_path=LIB,
+            function_name="list_mean",
+            is_elementwise=False,
+            returns_scalar=True,
+        )
+    
+    # Alias for mean
+    def avg(self) -> pl.Expr:
+        """
+        Alias for mean(). Calculate average across rows for list columns.
+        
+        See mean() for full documentation.
+        """
+        return self.mean()
+    
+    def min(self) -> pl.Expr:
+        """
+        Find minimum element at each position across rows (vertical aggregation).
+        
+        Returns a single row with a list where each element is the minimum
+        of elements at that position across all input lists.
+        
+        All lists must have the same length.
+        
+        Returns
+        -------
+        pl.Expr
+            Expression returning a list with the same type as input.
+        
+        Examples
+        --------
+        >>> df = pl.DataFrame({"a": [[3, 5, 2], [1, 7, 4]]})
+        >>> df.select(pl.col("a").vec_ops.min())
+        shape: (1, 1)
+        ┌───────────┐
+        │ a         │
+        │ ---       │
+        │ list[i64] │
+        ╞═══════════╡
+        │ [1, 5, 2] │
+        └───────────┘
+        """
+        return register_plugin_function(
+            args=[self._expr],
+            plugin_path=LIB,
+            function_name="list_min",
+            is_elementwise=False,
+            returns_scalar=True,
+        )
+    
+    def max(self) -> pl.Expr:
+        """
+        Find maximum element at each position across rows (vertical aggregation).
+        
+        Returns a single row with a list where each element is the maximum
+        of elements at that position across all input lists.
+        
+        All lists must have the same length.
+        
+        Returns
+        -------
+        pl.Expr
+            Expression returning a list with the same type as input.
+        
+        Examples
+        --------
+        >>> df = pl.DataFrame({"a": [[3, 5, 2], [1, 7, 4]]})
+        >>> df.select(pl.col("a").vec_ops.max())
+        shape: (1, 1)
+        ┌───────────┐
+        │ a         │
+        │ ---       │
+        │ list[i64] │
+        ╞═══════════╡
+        │ [3, 7, 4] │
+        └───────────┘
+        """
+        return register_plugin_function(
+            args=[self._expr],
+            plugin_path=LIB,
+            function_name="list_max",
+            is_elementwise=False,
+            returns_scalar=True,
+        )
+    
+    def diff(self) -> pl.Expr:
+        """
+        Calculate differences between consecutive rows at each position.
+        
+        Returns n-1 rows where n is the number of input rows. Each row contains
+        the element-wise difference from the previous row: row[i] - row[i-1].
+        
+        All lists must have the same length.
+        
+        Returns
+        -------
+        pl.Expr
+            Expression returning lists with differences, preserving input type.
+        
+        Examples
+        --------
+        >>> df = pl.DataFrame({"a": [[5, 10, 15], [2, 15, 5], [0, 0, 0]]})
+        >>> df.select(pl.col("a").vec_ops.diff())
+        shape: (2, 1)
+        ┌──────────────────┐
+        │ a                │
+        │ ---              │
+        │ list[i64]        │
+        ╞══════════════════╡
+        │ [-3, 5, -10]     │
+        │ [-2, -15, -5]    │
+        └──────────────────┘
+        """
+        return register_plugin_function(
+            args=[self._expr],
+            plugin_path=LIB,
+            function_name="list_diff",
+            is_elementwise=False,
+            returns_scalar=False,  # Returns multiple rows
+        )
