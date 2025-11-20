@@ -434,6 +434,137 @@ def test_vec_max_with_nulls():
     # Expect max of non-null rows: [5, 10, 7]
     assert len(result) == 1
     assert result["a"][0].to_list() == [5, 10, 7]
+
+
+def test_vec_sum_with_arrays():
+    """Test sum on Array dtype."""
+    df = pl.DataFrame({
+        "a": [[1, 2, 3], [4, 5, 6]]
+    }).select(pl.col("a").cast(pl.Array(pl.Int64, 3)))
+    
+    result = df.select(pl.col("a").vec_ops.sum())
+    print(result)
+    
+    # Should return Array dtype
+    assert result.schema["a"] == pl.Array(pl.Int64, 3)
+    assert result["a"][0].to_list() == [5, 7, 9]
+
+
+def test_vec_mean_with_arrays():
+    """Test mean on Array dtype."""
+    df = pl.DataFrame({
+        "a": [[2, 4, 6], [4, 6, 8]]
+    }).select(pl.col("a").cast(pl.Array(pl.Int64, 3)))
+    
+    result = df.select(pl.col("a").vec_ops.mean())
+    print(result)
+    
+    # Should return Array[Float64]
+    assert result.schema["a"] == pl.Array(pl.Float64, 3)
+    assert result["a"][0].to_list() == [3.0, 5.0, 7.0]
+
+
+def test_vec_min_with_arrays():
+    """Test min on Array dtype."""
+    df = pl.DataFrame({
+        "a": [[5, 10, 3], [2, 8, 7]]
+    }).select(pl.col("a").cast(pl.Array(pl.Int64, 3)))
+    
+    result = df.select(pl.col("a").vec_ops.min())
+    print(result)
+    
+    # Should return Array dtype with same inner type
+    assert result.schema["a"] == pl.Array(pl.Int64, 3)
+    assert result["a"][0].to_list() == [2, 8, 3]
+
+
+def test_vec_max_with_arrays():
+    """Test max on Array dtype."""
+    df = pl.DataFrame({
+        "a": [[5, 10, 3], [2, 8, 7]]
+    }).select(pl.col("a").cast(pl.Array(pl.Int64, 3)))
+    
+    result = df.select(pl.col("a").vec_ops.max())
+    print(result)
+    
+    # Should return Array dtype with same inner type
+    assert result.schema["a"] == pl.Array(pl.Int64, 3)
+    assert result["a"][0].to_list() == [5, 10, 7]
+
+
+def test_vec_diff_with_arrays():
+    """Test diff on Array dtype."""
+    df = pl.DataFrame({
+        "a": [[5, 10, 15], [0, 5, 10], [1, 2, 3]]
+    }).select(pl.col("a").cast(pl.Array(pl.Int64, 3)))
+    
+    result = df.select(pl.col("a").vec_ops.diff())
+    print(result)
+    
+    # Should return Array dtype with same inner type
+    assert result.schema["a"] == pl.Array(pl.Int64, 3)
+    assert len(result) == 3
+    assert result["a"][0].to_list() == [None, None, None]  # First row
+    assert result["a"][1].to_list() == [-5, -5, -5]        # Second row
+    assert result["a"][2].to_list() == [1, -3, -7]         # Third row
+
+
+def test_vec_sum_with_null_elements():
+    """Test that sum skips null elements within lists."""
+    df = pl.DataFrame({
+        "a": [[1, None, 3], [4, 5, None], [None, 2, 1]]
+    })
+    result = df.select(pl.col("a").vec_ops.sum())
+    print(result)
+    
+    # Expect sum ignoring nulls: [5, 7, 4]
+    assert len(result) == 1
+    assert result["a"][0].to_list() == [5.0, 7.0, 4.0]
+
+
+def test_vec_mean_with_null_elements():
+    """Test that mean skips null elements within lists."""
+    df = pl.DataFrame({
+        "a": [[2, None, 6], [4, 6, None], [None, 3, 9]]
+    })
+    result = df.select(pl.col("a").vec_ops.mean())
+    print(result)
+    
+    # Position 0: (2+4)/2 = 3.0
+    # Position 1: (6+3)/2 = 4.5  
+    # Position 2: (6+9)/2 = 7.5
+    assert len(result) == 1
+    assert result["a"][0].to_list() == [3.0, 4.5, 7.5]
+
+
+def test_vec_min_with_null_elements():
+    """Test that min skips null elements within lists."""
+    df = pl.DataFrame({
+        "a": [[5, None, 3], [None, 8, 7], [2, 10, None]]
+    })
+    result = df.select(pl.col("a").vec_ops.min())
+    print(result)
+    
+    # Position 0: min(5, 2) = 2
+    # Position 1: min(8, 10) = 8
+    # Position 2: min(3, 7) = 3
+    assert len(result) == 1
+    assert result["a"][0].to_list() == [2, 8, 3]
+
+
+def test_vec_max_with_null_elements():
+    """Test that max skips null elements within lists."""
+    df = pl.DataFrame({
+        "a": [[5, None, 3], [None, 8, 7], [2, 10, None]]
+    })
+    result = df.select(pl.col("a").vec_ops.max())
+    print(result)
+    
+    # Position 0: max(5, 2) = 5
+    # Position 1: max(8, 10) = 10
+    # Position 2: max(3, 7) = 7
+    assert len(result) == 1
+    assert result["a"][0].to_list() == [5, 10, 7]
     
 
 if __name__ == "__main__":
