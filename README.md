@@ -2,6 +2,16 @@
 
 A Polars plugin for vertical operations on list or array columns - aggregate across rows instead of within lists.
 
+**🚧 Under Development:** This project is actively being developed. 
+
+**⚠️ Disclaimer:** The initial Rust extension is entirely AI-generated, as are the majority of tests and documentation. Use at your own risk!
+
+## Acknowledgments
+
+Initialized from
+[`https://github.com/MarcoGorelli/cookiecutter-polars-plugins`](https://github.com/MarcoGorelli/cookiecutter-polars-plugins):
+thanks to Marco Gorelli for writing the excellent [Polars Plugins Tutorial](https://marcogorelli.github.io/polars-plugins-tutorial/).
+
 ## Installation
 
 ```bash
@@ -11,18 +21,29 @@ uv add polars-vec-ops
 ## Quick Start
 
 ```python
-import polars as pl
-import polars_vec_ops # registers the `vec` namespace on columns/expressions
+>>> import polars as pl
+>>> import polars_vec_ops # registers the `vec` namespace on columns/expressions
 
-# Sum across rows at each position
-df = pl.DataFrame({"a": [[1, 2, 3], [4, 5, 6]]})
-df.select(pl.col("a").vec.sum())
-# shape: (1, 1)
-# ┌───────────┐
-# │ a         │
-# ╞═══════════╡
-# │ [5, 7, 9] │
-# └───────────┘
+>>> df = pl.DataFrame({"a": [[1, 2, 3], [4, 5, 6]]})
+shape: (2, 1)
+┌───────────┐
+│ a         │
+│ ---       │
+│ list[i64] │
+╞═══════════╡
+│ [1, 2, 3] │
+│ [4, 5, 6] │
+└───────────┘
+
+>>> df.select(pl.col("a").vec.sum())
+shape: (1, 1)
+┌───────────┐
+│ a         │
+│ ---       │
+│ list[i64] │
+╞═══════════╡
+│ [5, 7, 9] │
+└───────────┘
 ```
 
 ## Operations
@@ -51,7 +72,7 @@ uv sync
 maturin develop --release
 
 # Run tests
-pytest tests/
+pytest
 ```
 
 ## License
