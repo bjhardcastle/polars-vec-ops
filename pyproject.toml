@@ -13,7 +13,7 @@ classifiers = [
 ]
 dynamic = ["version"]
 dependencies = [
-    "polars>=1.0",
+    "polars>=1.8.0",
 ]
 
 [project.urls]
