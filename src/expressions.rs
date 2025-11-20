@@ -272,47 +272,61 @@ fn list_diff(inputs: &[Series]) -> PolarsResult<Series> {
     let list_chunked = series.list()?;
 
     let n_lists = list_chunked.len();
-    if n_lists <= 1 {
-        // With 0 or 1 list, there are no differences to compute
-        // Return empty list column
-        return Ok(ListChunked::full_null(series.name().clone(), 0).into_series());
+    if n_lists == 0 {
+        return Ok(series.slice(0, 0));
     }
 
-    // Get first list to determine length and type
-    let first_series = list_chunked
-        .get_as_series(0)
-        .ok_or_else(|| polars_err!(ComputeError: "No data in list column"))?;
-    let expected_len = first_series.len();
-    let original_dtype = first_series.dtype().clone();
-
-    // Collect all series references and validate
-    let mut all_series = Vec::with_capacity(n_lists);
-    all_series.push(first_series);
-
-    for i in 1..n_lists {
-        let s = list_chunked
-            .get_as_series(i)
-            .ok_or_else(|| polars_err!(ComputeError: "Null value in list column at index {}", i))?;
-        if s.len() != expected_len {
-            polars_bail!(
-                ComputeError:
-                "All lists must have the same length for vertical diff. Expected {}, got {}",
-                expected_len, s.len()
-            );
+    // Determine expected length and dtype from first non-null list
+    let mut expected_len = 0;
+    let mut original_dtype = DataType::Null;
+    
+    for i in 0..n_lists {
+        if let Some(s) = list_chunked.get_as_series(i) {
+            expected_len = s.len();
+            original_dtype = s.dtype().clone();
+            break;
         }
-        all_series.push(s);
+    }
+    
+    if original_dtype == DataType::Null {
+        // All rows are null
+        return Ok(series.clone());
     }
 
-    // Calculate differences: list[i] - list[i-1] for i in 1..n_lists
-    // Build each diff as a separate list row
-    let mut diff_chunks = Vec::with_capacity(n_lists - 1);
+    // Build result: first row is null, then compute differences
+    let mut diff_chunks = Vec::with_capacity(n_lists);
 
+    // First row is always null (no previous row to compare)
+    // Create a null Series with the correct type and length, then wrap in list
+    let null_series = Series::full_null("".into(), expected_len, &original_dtype);
+    diff_chunks.push(ListChunked::full(series.name().clone(), &null_series, 1));
+
+    // Calculate differences for remaining rows
     for i in 1..n_lists {
-        let diff = (&all_series[i] - &all_series[i - 1])?;
-        let diff_casted = diff.cast(&original_dtype)?;
-        // Wrap in a single-row list
-        let diff_list = ListChunked::full(series.name().clone(), &diff_casted, 1);
-        diff_chunks.push(diff_list);
+        let curr_opt = list_chunked.get_as_series(i);
+        let prev_opt = list_chunked.get_as_series(i - 1);
+
+        match (prev_opt, curr_opt) {
+            (Some(prev), Some(curr)) => {
+                // Both non-null: validate lengths and compute diff
+                if prev.len() != expected_len || curr.len() != expected_len {
+                    polars_bail!(
+                        ComputeError:
+                        "All lists must have the same length for vertical diff. Expected {}",
+                        expected_len
+                    );
+                }
+                let diff = (&curr - &prev)?;
+                let diff_casted = diff.cast(&original_dtype)?;
+                let diff_list = ListChunked::full(series.name().clone(), &diff_casted, 1);
+                diff_chunks.push(diff_list);
+            }
+            _ => {
+                // Either current or previous is null: result is null list
+                let null_series = Series::full_null("".into(), expected_len, &original_dtype);
+                diff_chunks.push(ListChunked::full(series.name().clone(), &null_series, 1));
+            }
+        }
     }
 
     // Concatenate all chunks vertically

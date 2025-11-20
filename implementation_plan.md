@@ -40,7 +40,8 @@ Statistical aggregations across lists.
   - Status: ✅ Implemented
   - Function: `list_diff`
   - Signature: `vec_ops.diff()`
-  - Example: `[[5, 10, 15], [2, 15, 5], [0, 0, 0]]` → `[[-3, 5, -10], [-2, -15, -5]]`
+  - Example: `[[5, 10, 15], [2, 15, 5], [0, 0, 0]]` → `[[null, null, null], [-3, 5, -10], [-2, -15, -5]]`
+  - Note: Returns same number of rows; first row is list of nulls (consistent with scalar diff behavior)
   - Test: ✅ Passing 
   
 - [ ] **median** - Median of elements at each position

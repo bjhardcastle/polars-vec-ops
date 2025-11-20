@@ -320,10 +320,11 @@ def test_vec_diff():
     result = df.select(pl.col("a").vec_ops.diff())
     print(result)
     
-    # Expect 2 rows (n-1): [[-3, 5, -10], [-2, -15, -5]]
-    assert len(result) == 2
-    assert result["a"][0].to_list() == [-3, 5, -10]
-    assert result["a"][1].to_list() == [-2, -15, -5]
+    # Expect 3 rows: first is list of nulls, then differences
+    assert len(result) == 3
+    assert result["a"][0].to_list() == [None, None, None]  # First row is list of nulls
+    assert result["a"][1].to_list() == [-3, 5, -10]
+    assert result["a"][2].to_list() == [-2, -15, -5]
 
 
 def test_vec_diff_two_rows():
@@ -334,21 +335,23 @@ def test_vec_diff_two_rows():
     result = df.select(pl.col("a").vec_ops.diff())
     print(result)
     
-    # Expect 1 row: [[-5, -5, -5]]
-    assert len(result) == 1
-    assert result["a"][0].to_list() == [-5, -5, -5]
+    # Expect 2 rows: first is list of nulls, second is diff
+    assert len(result) == 2
+    assert result["a"][0].to_list() == [None, None, None]  # First row is list of nulls
+    assert result["a"][1].to_list() == [-5, -5, -5]
 
 
 def test_vec_diff_single_row():
-    """Test vertical diff with a single row returns empty."""
+    """Test vertical diff with a single row returns list of nulls."""
     df = pl.DataFrame({
         "a": [[10, 20, 30]]
     })
     result = df.select(pl.col("a").vec_ops.diff())
     print(result)
     
-    # Expect 0 rows (no differences with 1 row)
-    assert len(result) == 0
+    # Expect 1 row with list of nulls (no previous row to diff against)
+    assert len(result) == 1
+    assert result["a"][0].to_list() == [None, None, None]
 
 
 def test_vec_diff_floats():
@@ -359,9 +362,26 @@ def test_vec_diff_floats():
     result = df.select(pl.col("a").vec_ops.diff())
     print(result)
     
-    # Expect 1 row: [[-0.5, -0.5, -0.5]]
-    assert len(result) == 1
-    assert result["a"][0].to_list() == [-0.5, -0.5, -0.5]
+    # Expect 2 rows: first is list of nulls, second is diff
+    assert len(result) == 2
+    assert result["a"][0].to_list() == [None, None, None]
+    assert result["a"][1].to_list() == [-0.5, -0.5, -0.5]
+
+
+def test_vec_diff_with_nulls():
+    """Test vertical diff with null rows."""
+    df = pl.DataFrame({
+        "a": [[5, 10, 15], None, [0, 0, 0]]
+    })
+    result = df.select(pl.col("a").vec_ops.diff())
+    print(result)
+    
+    # Expect 3 rows: first is list of nulls, second is list of nulls (curr is null),
+    # third is list of nulls (prev is null)
+    assert len(result) == 3
+    assert result["a"][0].to_list() == [None, None, None]  # No previous row
+    assert result["a"][1].to_list() == [None, None, None]  # Current is null
+    assert result["a"][2].to_list() == [None, None, None]  # Previous is null
     
 
 if __name__ == "__main__":

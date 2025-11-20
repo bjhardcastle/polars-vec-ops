@@ -171,8 +171,11 @@ class VecOpsNamespace:
         """
         Calculate differences between consecutive rows at each position.
         
-        Returns n-1 rows where n is the number of input rows. Each row contains
-        the element-wise difference from the previous row: row[i] - row[i-1].
+        Returns the same number of rows as input. The first row contains
+        a list of nulls (no previous row to compare). Each subsequent row
+        contains the element-wise difference from the previous row: row[i] - row[i-1].
+        
+        If either the current or previous row is null, the result is a list of nulls.
         
         All lists must have the same length.
         
@@ -180,25 +183,27 @@ class VecOpsNamespace:
         -------
         pl.Expr
             Expression returning lists with differences, preserving input type.
+            First row is always a list of nulls.
         
         Examples
         --------
         >>> df = pl.DataFrame({"a": [[5, 10, 15], [2, 15, 5], [0, 0, 0]]})
         >>> df.select(pl.col("a").vec_ops.diff())
-        shape: (2, 1)
-        ┌──────────────────┐
-        │ a                │
-        │ ---              │
-        │ list[i64]        │
-        ╞══════════════════╡
-        │ [-3, 5, -10]     │
-        │ [-2, -15, -5]    │
-        └──────────────────┘
+        shape: (3, 1)
+        ┌────────────────────┐
+        │ a                  │
+        │ ---                │
+        │ list[i64]          │
+        ╞════════════════════╡
+        │ [null, null, null] │
+        │ [-3, 5, -10]       │
+        │ [-2, -15, -5]      │
+        └────────────────────┘
         """
         return register_plugin_function(
             args=[self._expr],
             plugin_path=LIB,
             function_name="list_diff",
             is_elementwise=False,
-            returns_scalar=False,  # Returns multiple rows
+            returns_scalar=False,  # Returns same number of rows
         )
