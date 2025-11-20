@@ -14,25 +14,41 @@ if TYPE_CHECKING:
 LIB = Path(__file__).parent
 
 
-def pig_latinnify(expr: IntoExprColumn) -> pl.Expr:
-    return register_plugin_function(
-        args=[expr],
-        plugin_path=LIB,
-        function_name="pig_latinnify",
-        is_elementwise=True,
-    )
 
-def noop(expr: IntoExprColumn) -> pl.Expr:
-    return register_plugin_function(
-        args=[expr],
-        plugin_path=LIB,
-        function_name="noop",
-        is_elementwise=True,
-    )
-def abs_i64(expr: IntoExprColumn) -> pl.Expr:
-    return register_plugin_function(
-        args=[expr],
-        plugin_path=LIB,
-        function_name="abs_i64",
-        is_elementwise=True,
-    )
+
+@pl.api.register_expr_namespace("vec_ops")
+class VecOpsNamespace:
+    """Custom namespace for vertical list operations."""
+    
+    def __init__(self, expr: pl.Expr):
+        self._expr = expr
+    
+    def sum(self) -> pl.Expr:
+        """
+        Sum across rows for list columns (vertical aggregation).
+        
+        Returns a single row with a list where each element is the sum
+        of elements at that position across all input lists.
+        
+        All lists must have the same length.
+        
+        Examples
+        --------
+        >>> df = pl.DataFrame({"a": [[0, 1, 2], [1, 2, 3]]})
+        >>> df.select(pl.col("a").vec_ops.sum())
+        shape: (1, 1)
+        ┌───────────┐
+        │ a         │
+        │ ---       │
+        │ list[i64] │
+        ╞═══════════╡
+        │ [1, 3, 5] │
+        └───────────┘
+        """
+        return register_plugin_function(
+            args=[self._expr],
+            plugin_path=LIB,
+            function_name="list_sum",
+            is_elementwise=False,
+            returns_scalar=True,
+        )
