@@ -382,6 +382,58 @@ def test_vec_diff_with_nulls():
     assert result["a"][0].to_list() == [None, None, None]  # No previous row
     assert result["a"][1].to_list() == [None, None, None]  # Current is null
     assert result["a"][2].to_list() == [None, None, None]  # Previous is null
+
+
+def test_vec_sum_with_nulls():
+    """Test that sum skips null rows."""
+    df = pl.DataFrame({
+        "a": [[1, 2, 3], None, [4, 5, 6]]
+    })
+    result = df.select(pl.col("a").vec_ops.sum())
+    print(result)
+    
+    # Expect sum of non-null rows: [5, 7, 9]
+    assert len(result) == 1
+    assert result["a"][0].to_list() == [5.0, 7.0, 9.0]
+
+
+def test_vec_mean_with_nulls():
+    """Test that mean skips null rows."""
+    df = pl.DataFrame({
+        "a": [[2, 4, 6], None, [4, 6, 8]]
+    })
+    result = df.select(pl.col("a").vec_ops.mean())
+    print(result)
+    
+    # Expect mean of non-null rows: [3.0, 5.0, 7.0]
+    assert len(result) == 1
+    assert result["a"][0].to_list() == [3.0, 5.0, 7.0]
+
+
+def test_vec_min_with_nulls():
+    """Test that min skips null rows."""
+    df = pl.DataFrame({
+        "a": [[5, 10, 3], None, [2, 8, 7]]
+    })
+    result = df.select(pl.col("a").vec_ops.min())
+    print(result)
+    
+    # Expect min of non-null rows: [2, 8, 3]
+    assert len(result) == 1
+    assert result["a"][0].to_list() == [2, 8, 3]
+
+
+def test_vec_max_with_nulls():
+    """Test that max skips null rows."""
+    df = pl.DataFrame({
+        "a": [[5, 10, 3], None, [2, 8, 7]]
+    })
+    result = df.select(pl.col("a").vec_ops.max())
+    print(result)
+    
+    # Expect max of non-null rows: [5, 10, 7]
+    assert len(result) == 1
+    assert result["a"][0].to_list() == [5, 10, 7]
     
 
 if __name__ == "__main__":

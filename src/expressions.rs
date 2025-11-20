@@ -23,29 +23,42 @@ fn list_sum(inputs: &[Series]) -> PolarsResult<Series> {
         return Ok(series.slice(0, 0));
     }
 
-    // Get first list to determine length and type
-    let first_series = list_chunked
-        .get_as_series(0)
-        .ok_or_else(|| polars_err!(ComputeError: "No data in list column"))?;
-    let expected_len = first_series.len();
-    let original_dtype = first_series.dtype().clone();
-
-    // Collect all series references and validate
-    let mut all_series = Vec::with_capacity(n_lists);
-    all_series.push(first_series);
-
-    for i in 1..n_lists {
-        let s = list_chunked
-            .get_as_series(i)
-            .ok_or_else(|| polars_err!(ComputeError: "Null value in list column at index {}", i))?;
-        if s.len() != expected_len {
-            polars_bail!(
-                ComputeError:
-                "All lists must have the same length for vertical sum. Expected {}, got {}",
-                expected_len, s.len()
-            );
+    // Find first non-null list to determine length and type
+    let mut expected_len = 0;
+    let mut original_dtype = DataType::Null;
+    
+    for i in 0..n_lists {
+        if let Some(s) = list_chunked.get_as_series(i) {
+            expected_len = s.len();
+            original_dtype = s.dtype().clone();
+            break;
         }
-        all_series.push(s);
+    }
+    
+    if expected_len == 0 {
+        // All rows are null, return a null series
+        return Ok(ListChunked::full_null(series.name().clone(), n_lists).into_series());
+    }
+
+    // Collect all non-null series references and validate
+    let mut all_series = Vec::new();
+
+    for i in 0..n_lists {
+        if let Some(s) = list_chunked.get_as_series(i) {
+            if s.len() != expected_len {
+                polars_bail!(
+                    ComputeError:
+                    "All lists must have the same length for vertical sum. Expected {}, got {}",
+                    expected_len, s.len()
+                );
+            }
+            all_series.push(s);
+        }
+        // Skip null rows
+    }
+
+    if all_series.is_empty() {
+        return Ok(ListChunked::full_null(series.name().clone(), 1).into_series());
     }
 
     // Sum all series
@@ -66,7 +79,7 @@ fn list_sum(inputs: &[Series]) -> PolarsResult<Series> {
 fn list_mean_output_type(input_fields: &[Field]) -> PolarsResult<Field> {
     let field = &input_fields[0];
     match field.dtype() {
-        DataType::List(inner) => {
+        DataType::List(_) => {
             // Mean always returns Float64
             let float_inner = Box::new(DataType::Float64);
             Ok(Field::new(
@@ -88,28 +101,42 @@ fn list_mean(inputs: &[Series]) -> PolarsResult<Series> {
         return Ok(series.slice(0, 0));
     }
 
-    // Get first list to determine length
-    let first_series = list_chunked
-        .get_as_series(0)
-        .ok_or_else(|| polars_err!(ComputeError: "No data in list column"))?;
-    let expected_len = first_series.len();
-
-    // Collect all series references and validate
-    let mut all_series = Vec::with_capacity(n_lists);
-    all_series.push(first_series);
-
-    for i in 1..n_lists {
-        let s = list_chunked
-            .get_as_series(i)
-            .ok_or_else(|| polars_err!(ComputeError: "Null value in list column at index {}", i))?;
-        if s.len() != expected_len {
-            polars_bail!(
-                ComputeError:
-                "All lists must have the same length for vertical mean. Expected {}, got {}",
-                expected_len, s.len()
-            );
+    // Find first non-null list to determine length
+    let mut expected_len = 0;
+    let mut found_valid = false;
+    
+    for i in 0..n_lists {
+        if let Some(s) = list_chunked.get_as_series(i) {
+            expected_len = s.len();
+            found_valid = true;
+            break;
         }
-        all_series.push(s);
+    }
+    
+    if !found_valid {
+        // All rows are null
+        return Ok(ListChunked::full_null(series.name().clone(), n_lists).into_series());
+    }
+
+    // Collect all non-null series references and validate
+    let mut all_series = Vec::new();
+
+    for i in 0..n_lists {
+        if let Some(s) = list_chunked.get_as_series(i) {
+            if s.len() != expected_len {
+                polars_bail!(
+                    ComputeError:
+                    "All lists must have the same length for vertical mean. Expected {}, got {}",
+                    expected_len, s.len()
+                );
+            }
+            all_series.push(s);
+        }
+        // Skip null rows
+    }
+
+    if all_series.is_empty() {
+        return Ok(ListChunked::full_null(series.name().clone(), 1).into_series());
     }
 
     // Sum all series, then divide by count
@@ -119,8 +146,8 @@ fn list_mean(inputs: &[Series]) -> PolarsResult<Series> {
         result = (&result + &s_float)?;
     }
 
-    // Divide by number of lists to get mean
-    let n_lists_f64 = n_lists as f64;
+    // Divide by number of non-null lists to get mean
+    let n_lists_f64 = all_series.len() as f64;
     result = result.divide(&Series::new("".into(), &[n_lists_f64]))?;
 
     // Wrap in a single-row list
@@ -150,29 +177,44 @@ fn list_min(inputs: &[Series]) -> PolarsResult<Series> {
         return Ok(series.slice(0, 0));
     }
 
-    // Get first list to determine length and type
-    let first_series = list_chunked
-        .get_as_series(0)
-        .ok_or_else(|| polars_err!(ComputeError: "No data in list column"))?;
-    let expected_len = first_series.len();
-    let original_dtype = first_series.dtype().clone();
-
-    // Collect all series references and validate
-    let mut all_series = Vec::with_capacity(n_lists);
-    all_series.push(first_series);
-
-    for i in 1..n_lists {
-        let s = list_chunked
-            .get_as_series(i)
-            .ok_or_else(|| polars_err!(ComputeError: "Null value in list column at index {}", i))?;
-        if s.len() != expected_len {
-            polars_bail!(
-                ComputeError:
-                "All lists must have the same length for vertical min. Expected {}, got {}",
-                expected_len, s.len()
-            );
+    // Find first non-null list to determine length and type
+    let mut expected_len = 0;
+    let mut original_dtype = DataType::Null;
+    let mut found_valid = false;
+    
+    for i in 0..n_lists {
+        if let Some(s) = list_chunked.get_as_series(i) {
+            expected_len = s.len();
+            original_dtype = s.dtype().clone();
+            found_valid = true;
+            break;
         }
-        all_series.push(s);
+    }
+    
+    if !found_valid {
+        // All rows are null
+        return Ok(ListChunked::full_null(series.name().clone(), n_lists).into_series());
+    }
+
+    // Collect all non-null series references and validate
+    let mut all_series = Vec::new();
+
+    for i in 0..n_lists {
+        if let Some(s) = list_chunked.get_as_series(i) {
+            if s.len() != expected_len {
+                polars_bail!(
+                    ComputeError:
+                    "All lists must have the same length for vertical min. Expected {}, got {}",
+                    expected_len, s.len()
+                );
+            }
+            all_series.push(s);
+        }
+        // Skip null rows
+    }
+
+    if all_series.is_empty() {
+        return Ok(ListChunked::full_null(series.name().clone(), 1).into_series());
     }
 
     // Calculate element-wise minimum
@@ -213,29 +255,44 @@ fn list_max(inputs: &[Series]) -> PolarsResult<Series> {
         return Ok(series.slice(0, 0));
     }
 
-    // Get first list to determine length and type
-    let first_series = list_chunked
-        .get_as_series(0)
-        .ok_or_else(|| polars_err!(ComputeError: "No data in list column"))?;
-    let expected_len = first_series.len();
-    let original_dtype = first_series.dtype().clone();
-
-    // Collect all series references and validate
-    let mut all_series = Vec::with_capacity(n_lists);
-    all_series.push(first_series);
-
-    for i in 1..n_lists {
-        let s = list_chunked
-            .get_as_series(i)
-            .ok_or_else(|| polars_err!(ComputeError: "Null value in list column at index {}", i))?;
-        if s.len() != expected_len {
-            polars_bail!(
-                ComputeError:
-                "All lists must have the same length for vertical max. Expected {}, got {}",
-                expected_len, s.len()
-            );
+    // Find first non-null list to determine length and type
+    let mut expected_len = 0;
+    let mut original_dtype = DataType::Null;
+    let mut found_valid = false;
+    
+    for i in 0..n_lists {
+        if let Some(s) = list_chunked.get_as_series(i) {
+            expected_len = s.len();
+            original_dtype = s.dtype().clone();
+            found_valid = true;
+            break;
         }
-        all_series.push(s);
+    }
+    
+    if !found_valid {
+        // All rows are null
+        return Ok(ListChunked::full_null(series.name().clone(), n_lists).into_series());
+    }
+
+    // Collect all non-null series references and validate
+    let mut all_series = Vec::new();
+
+    for i in 0..n_lists {
+        if let Some(s) = list_chunked.get_as_series(i) {
+            if s.len() != expected_len {
+                polars_bail!(
+                    ComputeError:
+                    "All lists must have the same length for vertical max. Expected {}, got {}",
+                    expected_len, s.len()
+                );
+            }
+            all_series.push(s);
+        }
+        // Skip null rows
+    }
+
+    if all_series.is_empty() {
+        return Ok(ListChunked::full_null(series.name().clone(), 1).into_series());
     }
 
     // Calculate element-wise maximum
