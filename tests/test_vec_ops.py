@@ -128,11 +128,11 @@ def test_vec_sum_performance():
     df_simple = df.select("values")
     
     start = time.perf_counter()
-    result_vec_ops_simple = df_simple.select(pl.col("values").vec.sum())
+    _ = df_simple.select(pl.col("values").vec.sum())
     time_vec_ops_simple = time.perf_counter() - start
-    
+
     start = time.perf_counter()
-    result_manual_simple = df_simple.select(
+    _ = df_simple.select(
         pl.concat_list([pl.col("values").list.get(i).sum() for i in range(list_length)])
         .alias("values")
     )
