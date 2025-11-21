@@ -182,7 +182,7 @@ jobs:
           fetch-tags: true  
 
       - name: Bump cargo version
-        id: bump
+        id: cargo-bump
         uses: tj-actions/cargo-bump@v3
         with:
           release_type: patch
@@ -199,11 +199,11 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add Cargo.toml
-          git commit -m "Bump version: ${{ steps.bump.outputs.old_version }} -> ${{ steps.bump.outputs.new_version }} [skip actions]"
+          git commit -m "Bump version: ${{ steps.cargo-bump.outputs.old_version }} -> ${{ steps.cargo-bump.outputs.new_version }} [skip actions]"
     
       - name: Create tag
         run: |
-          git tag v${{ steps.bump.outputs.new_version }}
+          git tag v${{ steps.cargo-bump.outputs.new_version }}
     
       - name: Publish to PyPI
         uses: PyO3/maturin-action@v1
