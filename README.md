@@ -23,18 +23,7 @@ uv add polars-vec-ops
 ```python
 >>> import polars as pl
 >>> import polars_vec_ops # registers the `vec` namespace on columns/expressions
-
 >>> df = pl.DataFrame({"a": [[1, 2, 3], [4, 5, 6]]})
-shape: (2, 1)
-┌───────────┐
-│ a         │
-│ ---       │
-│ list[i64] │
-╞═══════════╡
-│ [1, 2, 3] │
-│ [4, 5, 6] │
-└───────────┘
-
 >>> df.select(pl.col("a").vec.sum())
 shape: (1, 1)
 ┌───────────┐
@@ -44,6 +33,7 @@ shape: (1, 1)
 ╞═══════════╡
 │ [5, 7, 9] │
 └───────────┘
+
 ```
 
 ## Operations

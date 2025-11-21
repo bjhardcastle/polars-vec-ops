@@ -38,6 +38,10 @@ build-backend = "maturin"
 [tool.maturin]
 module-name = "polars_vec_ops._internal"
 
+[tool.pytest.ini_options]
+addopts = "--doctest-modules --doctest-glob='*.md' --doctest-continue-on-failure"
+testpaths = ["tests", "polars_vec_ops", "README.md"]
+
 [[tool.mypy.overrides]]
 module = "polars.utils.udfs"
 ignore_missing_imports = true
