@@ -15,8 +15,8 @@ install-release:
 pre-commit:
 	cargo fmt --all && cargo clippy --all-features
 	.venv/bin/python -m ruff check . --fix --exit-non-zero-on-fix
-	.venv/bin/python -m ruff format vec_ops tests
-	.venv/bin/mypy vec_ops tests
+	.venv/bin/python -m ruff format polars_vec_ops tests
+	.venv/bin/mypy polars_vec_ops tests
 
 test:
 	.venv/bin/python -m pytest tests
