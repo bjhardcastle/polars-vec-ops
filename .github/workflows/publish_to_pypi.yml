@@ -181,11 +181,28 @@ jobs:
           fetch-depth: 0    # get all commits (on default branch)
           fetch-tags: true  
 
-      - name: Bump cargo version
+      - name: Get current version
+        id: current-version
+        run: |
+          VERSION=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Current version: $VERSION"
+      
+      - name: Bump version in Cargo.toml
         id: cargo-bump
         uses: tj-actions/cargo-bump@v3
         with:
           release_type: patch
+
+      - name: Update Cargo.lock
+        run: cargo update --workspace
+
+      - name: Get new version
+        id: new-version
+        run: |
+          VERSION=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "New version: $VERSION"
     
       - uses: actions/download-artifact@v4
         
@@ -198,12 +215,12 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add Cargo.toml
-          git commit -m "Bump version: ${{ steps.cargo-bump.outputs.old_version }} -> ${{ steps.cargo-bump.outputs.new_version }} [skip actions]"
+          git add Cargo.toml Cargo.lock
+          git commit -m "Bump version: ${{ steps.current-version.outputs.version }} -> ${{ steps.new-version.outputs.version }} [skip actions]"
     
       - name: Create tag
         run: |
-          git tag v${{ steps.cargo-bump.outputs.new_version }}
+          git tag v${{ steps.new-version.outputs.version }}
     
       - name: Publish to PyPI
         uses: PyO3/maturin-action@v1
@@ -217,5 +234,3 @@ jobs:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           tags: true
           branch: main
-
-
