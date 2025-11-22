@@ -1,6 +1,6 @@
 # Polars Vec Ops
 
-A Polars plugin for vertical operations on list or array columns - aggregate across rows instead of within lists.
+A Polars plugin for vertical operations on columns 1D arrays or lists of equal length - aggregate across rows instead of within lists.
 
 **🚧 Under Development**
 
@@ -27,23 +27,23 @@ uv add polars-vec-ops
 >>> df.select(pl.col("a").vec.sum())
 shape: (1, 1)
 ┌───────────┐
-│ a         │
-│ ---       │
-│ list[i64] │
+│ a           │
+│ ---         │
+│ list[i64]   │
 ╞═══════════╡
-│ [5, 7, 9] │
+│ [5, 7, 9]   │
 └───────────┘
 
-# alternatively, use functions on column names (with IDE hints and proper typing checking):
+# alternatively, use functions on column names (with IDE hints and proper type checking):
 >>> import polars_vec_ops as vec
 >>> df.select(vec.sum("a"))
 shape: (1, 1)
 ┌───────────┐
-│ a         │
-│ ---       │
-│ list[i64] │
+│ a           │
+│ ---         │
+│ list[i64]   │
 ╞═══════════╡
-│ [5, 7, 9] │
+│ [5, 7, 9]   │
 └───────────┘
 ```
 
