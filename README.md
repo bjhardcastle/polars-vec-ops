@@ -2,9 +2,9 @@
 
 A Polars plugin for vertical operations on list or array columns - aggregate across rows instead of within lists.
 
-**🚧 Under Development:** This project is actively being developed. 
+**🚧 Under Development**
 
-**⚠️ Disclaimer:** The initial Rust extension is entirely AI-generated, as are the majority of tests and documentation. Use at your own risk!
+**⚠️ Disclaimer:** The initial Rust extensions are entirely AI-generated, as are the majority of tests and documentation. Use at your own risk!
 
 ## Acknowledgments
 
@@ -34,6 +34,17 @@ shape: (1, 1)
 │ [5, 7, 9] │
 └───────────┘
 
+# alternatively, use functions on column names (with IDE hints and proper typing checking):
+>>> import polars_vec_ops as vec
+>>> df.select(vec.sum("a"))
+shape: (1, 1)
+┌───────────┐
+│ a         │
+│ ---       │
+│ list[i64] │
+╞═══════════╡
+│ [5, 7, 9] │
+└───────────┘
 ```
 
 ## Operations
