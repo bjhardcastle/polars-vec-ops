@@ -662,7 +662,7 @@ fn convolve_1d(signal: &[f64], kernel: &[f64], mode: &str) -> PolarsResult<Vec<f
     // Perform convolution
     // Convolution formula: out[n] = sum_k kernel_reversed[k] * signal[n - (kernel_len - 1) + k]
     // where kernel_reversed[k] = kernel[kernel_len - 1 - k]
-    for out_idx in 0..output_len {
+    for (out_idx, result_val) in result.iter_mut().enumerate() {
         let mut sum = 0.0;
 
         // Map output index to full convolution coordinates
@@ -681,7 +681,7 @@ fn convolve_1d(signal: &[f64], kernel: &[f64], mode: &str) -> PolarsResult<Vec<f
             }
         }
 
-        result[out_idx] = sum;
+        *result_val = sum;
     }
 
     Ok(result)
