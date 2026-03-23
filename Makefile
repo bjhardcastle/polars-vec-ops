@@ -6,11 +6,11 @@ venv:
 
 install:
 	unset CONDA_PREFIX && \
-	source .venv/bin/activate && maturin develop
+	source .venv/bin/activate && maturin develop --skip-install
 
 install-release:
 	unset CONDA_PREFIX && \
-	source .venv/bin/activate && maturin develop --release
+	source .venv/bin/activate && maturin develop --release --skip-install
 
 pre-commit:
 	cargo fmt --all && cargo clippy --all-features
