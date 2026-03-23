@@ -52,10 +52,37 @@ shape: (1, 1)
 
 All operations work vertically (across rows) on List or Array columns:
 
+### Aggregation
 - **`sum()`** - Sum elements at each position
 - **`mean()` / `avg()`** - Calculate mean at each position
 - **`min()` / `max()`** - Find min/max at each position
+
+### Row-wise
 - **`diff()`** - Calculate row-to-row differences
+
+### Per-element
+- **`convolve(kernel, fill_value, mode)`** - 1D convolution with a kernel
+- **`histogram(bins, *, start, stop, spacing)`** - Compute per-row histograms
+
+### Histogram
+
+Computes a histogram for each row's list, returning a struct with `breakpoints` (bin edges)
+and `counts`. Bins can be specified as:
+
+```python
+# fixed number of bins (auto-ranged from data)
+pl.col("a").vec.histogram(bins=10)
+
+# explicit bin edges
+pl.col("a").vec.histogram(bins=[0, 10, 20, 30])
+
+# evenly spaced range
+pl.col("a").vec.histogram(start=0.0, stop=100.0, spacing=10.0)
+
+# any scalar parameter can be an expression for per-row values
+pl.col("a").vec.histogram(bins=pl.col("n_bins"))
+pl.col("a").vec.histogram(start=pl.col("lo"), stop=pl.col("hi"), spacing=pl.col("step"))
+```
 
 ## Features
 

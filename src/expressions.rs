@@ -1,4 +1,5 @@
 #![allow(clippy::unused_unit)]
+use std::collections::HashMap;
 use polars::prelude::*;
 use pyo3_polars::derive::polars_expr;
 
@@ -685,4 +686,292 @@ fn convolve_1d(signal: &[f64], kernel: &[f64], mode: &str) -> PolarsResult<Vec<f
     }
 
     Ok(result)
+}
+
+// --- Histogram ---
+
+#[derive(serde::Deserialize)]
+struct HistogramKwargs {
+    mode: String,                           // "bins_int", "edges", "range"
+    bins_int: Option<u32>,
+    bins_edges: Option<Vec<f64>>,
+    start: Option<f64>,
+    stop: Option<f64>,
+    spacing: Option<f64>,
+    arg_positions: HashMap<String, usize>,  // param name -> inputs[] index for Expr params
+}
+
+fn histogram_output_type(input_fields: &[Field]) -> PolarsResult<Field> {
+    let field = &input_fields[0];
+    // Validate input is List or Array
+    match field.dtype() {
+        DataType::List(_) | DataType::Array(_, _) => {},
+        dt => polars_bail!(InvalidOperation: "Expected List or Array type, got {:?}", dt),
+    }
+    Ok(Field::new(
+        field.name().clone(),
+        DataType::Struct(vec![
+            Field::new("breakpoints".into(), DataType::List(Box::new(DataType::Float64))),
+            Field::new("counts".into(), DataType::List(Box::new(DataType::UInt32))),
+        ]),
+    ))
+}
+
+/// Resolve a f64 parameter from either kwargs scalar or an inputs Series at a given row.
+fn resolve_f64_param(
+    scalar: Option<f64>,
+    param_name: &str,
+    arg_positions: &HashMap<String, usize>,
+    inputs: &[Series],
+    row: usize,
+) -> PolarsResult<Option<f64>> {
+    if let Some(&pos) = arg_positions.get(param_name) {
+        let s = inputs[pos].cast(&DataType::Float64)?;
+        let ca = s.f64()?;
+        Ok(ca.get(row))
+    } else {
+        Ok(scalar)
+    }
+}
+
+/// Resolve a u32 parameter from either kwargs scalar or an inputs Series at a given row.
+fn resolve_u32_param(
+    scalar: Option<u32>,
+    param_name: &str,
+    arg_positions: &HashMap<String, usize>,
+    inputs: &[Series],
+    row: usize,
+) -> PolarsResult<Option<u32>> {
+    if let Some(&pos) = arg_positions.get(param_name) {
+        let s = inputs[pos].cast(&DataType::UInt32)?;
+        let ca = s.u32()?;
+        Ok(ca.get(row))
+    } else {
+        Ok(scalar)
+    }
+}
+
+/// Generate evenly spaced bin edges from start to stop with given spacing.
+fn edges_from_range(start: f64, stop: f64, spacing: f64) -> PolarsResult<Vec<f64>> {
+    if spacing <= 0.0 {
+        polars_bail!(ComputeError: "spacing must be positive, got {}", spacing);
+    }
+    if start >= stop {
+        polars_bail!(ComputeError: "start ({}) must be less than stop ({})", start, stop);
+    }
+    let n_bins = ((stop - start) / spacing).ceil() as usize;
+    let mut edges = Vec::with_capacity(n_bins + 1);
+    for i in 0..n_bins {
+        edges.push(start + i as f64 * spacing);
+    }
+    // Ensure the last edge is exactly stop
+    edges.push(stop);
+    Ok(edges)
+}
+
+/// Generate evenly spaced bin edges for n_bins bins spanning [min_val, max_val].
+fn edges_from_bins_int(n_bins: u32, min_val: f64, max_val: f64) -> Vec<f64> {
+    let n = n_bins as usize;
+    if n == 0 || min_val == max_val {
+        // Single bin centered on the value
+        let center = if min_val == max_val { min_val } else { (min_val + max_val) / 2.0 };
+        return vec![center - 0.5, center + 0.5];
+    }
+    let step = (max_val - min_val) / n as f64;
+    let mut edges = Vec::with_capacity(n + 1);
+    for i in 0..n {
+        edges.push(min_val + i as f64 * step);
+    }
+    edges.push(max_val);
+    edges
+}
+
+/// Count values into bins defined by edges.
+/// Bins are half-open: [edge_i, edge_{i+1}) except last bin [edge_{n-1}, edge_n].
+/// Values outside [edges[0], edges[last]] are excluded.
+fn count_into_bins(values: &[f64], edges: &[f64]) -> Vec<u32> {
+    let n_bins = edges.len() - 1;
+    let mut counts = vec![0u32; n_bins];
+    if n_bins == 0 {
+        return counts;
+    }
+    let first = edges[0];
+    let last = edges[n_bins];
+    for &v in values {
+        if v < first || v > last || !v.is_finite() {
+            continue;
+        }
+        // Binary search: find rightmost edge <= v
+        // partition_point returns the first index where edge > v
+        let idx = edges.partition_point(|&e| e <= v);
+        // idx is the first edge > v, so the bin is idx - 1
+        // But we need to handle the boundaries:
+        if idx == 0 {
+            // v < edges[0], already excluded above
+            continue;
+        }
+        let bin = idx - 1;
+        if bin >= n_bins {
+            // v == edges[last], put in last bin
+            counts[n_bins - 1] += 1;
+        } else {
+            counts[bin] += 1;
+        }
+    }
+    counts
+}
+
+#[polars_expr(output_type_func=histogram_output_type)]
+fn list_histogram(inputs: &[Series], kwargs: HistogramKwargs) -> PolarsResult<Series> {
+    let series = &inputs[0];
+
+    // Convert to List if it's an Array
+    let series = ensure_list_type(series)?;
+    let list_chunked = series.list()?;
+
+    let n_rows = list_chunked.len();
+    if n_rows == 0 {
+        // Return empty struct
+        let breakpoints = ListChunked::from_iter(std::iter::empty::<Option<Series>>())
+            .with_name("breakpoints".into());
+        let counts = ListChunked::from_iter(std::iter::empty::<Option<Series>>())
+            .with_name("counts".into());
+        let out = StructChunked::from_series(
+            series.name().clone(),
+            breakpoints.len(),
+            [breakpoints.into_series(), counts.into_series()].iter(),
+        )?;
+        return Ok(out.into_series());
+    }
+
+    // Pre-cast expr param columns to the right types
+    let mode = kwargs.mode.as_str();
+
+    let mut breakpoints_vec: Vec<Option<Series>> = Vec::with_capacity(n_rows);
+    let mut counts_vec: Vec<Option<Series>> = Vec::with_capacity(n_rows);
+
+    // For "edges" mode, resolve edges once (they're the same for every row)
+    let static_edges: Option<Vec<f64>> = if mode == "edges" {
+        let mut edges = kwargs.bins_edges.clone().unwrap_or_default();
+        edges.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        if edges.len() < 2 {
+            polars_bail!(ComputeError: "bin edges must have at least 2 elements, got {}", edges.len());
+        }
+        Some(edges)
+    } else {
+        None
+    };
+
+    for i in 0..n_rows {
+        let row_data = list_chunked.get_as_series(i);
+
+        if row_data.is_none() {
+            breakpoints_vec.push(None);
+            counts_vec.push(None);
+            continue;
+        }
+
+        let row_series = row_data.unwrap();
+        let row_f64 = row_series.cast(&DataType::Float64)?;
+        let ca = row_f64.f64()?;
+
+        // Collect non-null finite values
+        let values: Vec<f64> = ca
+            .into_iter()
+            .filter_map(|opt| opt.filter(|v| v.is_finite()))
+            .collect();
+
+        // Determine edges for this row
+        let edges = match mode {
+            "edges" => {
+                static_edges.clone().unwrap()
+            }
+            "bins_int" => {
+                let n_bins = resolve_u32_param(
+                    kwargs.bins_int,
+                    "bins_int",
+                    &kwargs.arg_positions,
+                    inputs,
+                    i,
+                )?;
+                match n_bins {
+                    None => {
+                        breakpoints_vec.push(None);
+                        counts_vec.push(None);
+                        continue;
+                    }
+                    Some(0) => {
+                        polars_bail!(ComputeError: "bins must be positive, got 0");
+                    }
+                    Some(n) => {
+                        if values.is_empty() {
+                            breakpoints_vec.push(None);
+                            counts_vec.push(None);
+                            continue;
+                        }
+                        let min_val = values.iter().cloned().fold(f64::INFINITY, f64::min);
+                        let max_val = values.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+                        edges_from_bins_int(n, min_val, max_val)
+                    }
+                }
+            }
+            "range" => {
+                let start = resolve_f64_param(
+                    kwargs.start,
+                    "start",
+                    &kwargs.arg_positions,
+                    inputs,
+                    i,
+                )?;
+                let stop = resolve_f64_param(
+                    kwargs.stop,
+                    "stop",
+                    &kwargs.arg_positions,
+                    inputs,
+                    i,
+                )?;
+                let spacing = resolve_f64_param(
+                    kwargs.spacing,
+                    "spacing",
+                    &kwargs.arg_positions,
+                    inputs,
+                    i,
+                )?;
+                match (start, stop, spacing) {
+                    (Some(s), Some(e), Some(sp)) => {
+                        edges_from_range(s, e, sp)?
+                    }
+                    _ => {
+                        // Null in any param -> null output
+                        breakpoints_vec.push(None);
+                        counts_vec.push(None);
+                        continue;
+                    }
+                }
+            }
+            _ => {
+                polars_bail!(ComputeError: "Invalid histogram mode '{}'. Expected 'bins_int', 'edges', or 'range'", mode);
+            }
+        };
+
+        let bin_counts = count_into_bins(&values, &edges);
+
+        let bp_series = Series::new("".into(), &edges);
+        let ct_series = Series::new("".into(), &bin_counts);
+        breakpoints_vec.push(Some(bp_series));
+        counts_vec.push(Some(ct_series));
+    }
+
+    // Build struct output
+    let breakpoints_list = ListChunked::from_iter(breakpoints_vec.into_iter())
+        .with_name("breakpoints".into());
+    let counts_list = ListChunked::from_iter(counts_vec.into_iter())
+        .with_name("counts".into());
+
+    let out = StructChunked::from_series(
+        series.name().clone(),
+        breakpoints_list.len(),
+        [breakpoints_list.into_series(), counts_list.into_series()].iter(),
+    )?;
+    Ok(out.into_series())
 }

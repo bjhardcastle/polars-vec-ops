@@ -834,5 +834,177 @@ def test_vec_convolve_with_groupby():
         assert abs(v1 - v2) < 1e-10
 
 
+def test_histogram_bins_int():
+    """Test histogram with integer number of bins."""
+    df = pl.DataFrame({"a": [[1, 2, 3, 4, 5]]})
+    result = df.select(pl.col("a").vec.histogram(bins=3))
+    row = result["a"][0]
+
+    np_counts, np_edges = np.histogram([1, 2, 3, 4, 5], bins=3)
+    assert row["counts"] == np_counts.tolist()
+    np.testing.assert_allclose(row["breakpoints"], np_edges.tolist())
+
+
+def test_histogram_bins_list():
+    """Test histogram with explicit bin edges."""
+    df = pl.DataFrame({"a": [[1, 2, 3, 4, 5]]})
+    edges = [0.0, 2.5, 5.0]
+    result = df.select(pl.col("a").vec.histogram(bins=edges))
+    row = result["a"][0]
+
+    np_counts, np_edges = np.histogram([1, 2, 3, 4, 5], bins=edges)
+    assert row["counts"] == np_counts.tolist()
+    assert row["breakpoints"] == list(np_edges)
+
+
+def test_histogram_start_stop_spacing():
+    """Test histogram with start/stop/spacing range mode."""
+    df = pl.DataFrame({"a": [[1, 2, 3, 4, 5]]})
+    result = df.select(pl.col("a").vec.histogram(start=0.0, stop=6.0, spacing=2.0))
+    row = result["a"][0]
+
+    np_counts, np_edges = np.histogram([1, 2, 3, 4, 5], bins=[0.0, 2.0, 4.0, 6.0])
+    assert row["counts"] == np_counts.tolist()
+    assert row["breakpoints"] == list(np_edges)
+
+
+def test_histogram_bins_expr():
+    """Test histogram with bins as an expression (per-row bin count)."""
+    df = pl.DataFrame({
+        "a": [[1, 2, 3, 4, 5], [10, 20, 30, 40, 50]],
+        "n_bins": [2, 5],
+    })
+    result = df.select(pl.col("a").vec.histogram(bins=pl.col("n_bins")))
+
+    # Row 0: 2 bins
+    row0 = result["a"][0]
+    np_counts0, np_edges0 = np.histogram([1, 2, 3, 4, 5], bins=2)
+    assert row0["counts"] == np_counts0.tolist()
+    np.testing.assert_allclose(row0["breakpoints"], np_edges0.tolist())
+
+    # Row 1: 5 bins
+    row1 = result["a"][1]
+    np_counts1, np_edges1 = np.histogram([10, 20, 30, 40, 50], bins=5)
+    assert row1["counts"] == np_counts1.tolist()
+    np.testing.assert_allclose(row1["breakpoints"], np_edges1.tolist())
+
+
+def test_histogram_range_expr():
+    """Test histogram with start/stop/spacing as expressions."""
+    df = pl.DataFrame({
+        "a": [[1, 2, 3, 4, 5], [10, 20, 30, 40, 50]],
+        "lo": [0.0, 0.0],
+        "hi": [6.0, 60.0],
+        "step": [2.0, 20.0],
+    })
+    result = df.select(
+        pl.col("a").vec.histogram(
+            start=pl.col("lo"), stop=pl.col("hi"), spacing=pl.col("step"),
+        )
+    )
+
+    # Row 0: bins [0, 2, 4, 6]
+    row0 = result["a"][0]
+    np_counts0, _ = np.histogram([1, 2, 3, 4, 5], bins=[0, 2, 4, 6])
+    assert row0["counts"] == np_counts0.tolist()
+
+    # Row 1: bins [0, 20, 40, 60]
+    row1 = result["a"][1]
+    np_counts1, _ = np.histogram([10, 20, 30, 40, 50], bins=[0, 20, 40, 60])
+    assert row1["counts"] == np_counts1.tolist()
+
+
+def test_histogram_null_row():
+    """Test histogram with null rows."""
+    df = pl.DataFrame({"a": [[1, 2, 3], None, [4, 5, 6]]})
+    result = df.select(pl.col("a").vec.histogram(bins=2))
+
+    assert result["a"][0]["counts"] is not None
+    assert result["a"][1]["counts"] is None
+    assert result["a"][1]["breakpoints"] is None
+    assert result["a"][2]["counts"] is not None
+
+
+def test_histogram_null_elements():
+    """Test histogram skips null elements in lists."""
+    df = pl.DataFrame({"a": [[1, None, 3, None, 5]]})
+    result = df.select(pl.col("a").vec.histogram(bins=[0.0, 2.5, 5.0]))
+    row = result["a"][0]
+
+    # Only 1, 3, 5 should be counted (nulls skipped)
+    np_counts, _ = np.histogram([1, 3, 5], bins=[0.0, 2.5, 5.0])
+    assert row["counts"] == np_counts.tolist()
+
+
+def test_histogram_uniform_data():
+    """Test histogram when all values are the same (min == max)."""
+    df = pl.DataFrame({"a": [[5, 5, 5, 5]]})
+    result = df.select(pl.col("a").vec.histogram(bins=3))
+    row = result["a"][0]
+
+    # When min==max, should create a single bin [v-0.5, v+0.5]
+    assert row["breakpoints"] == [4.5, 5.5]
+    assert row["counts"] == [4]
+
+
+def test_histogram_multiple_rows():
+    """Test histogram operates independently on each row."""
+    df = pl.DataFrame({"a": [[1, 2, 3], [10, 20, 30]]})
+    result = df.select(pl.col("a").vec.histogram(bins=2))
+
+    assert len(result) == 2
+
+    row0 = result["a"][0]
+    np_counts0, np_edges0 = np.histogram([1, 2, 3], bins=2)
+    assert row0["counts"] == np_counts0.tolist()
+
+    row1 = result["a"][1]
+    np_counts1, np_edges1 = np.histogram([10, 20, 30], bins=2)
+    assert row1["counts"] == np_counts1.tolist()
+
+
+def test_histogram_standalone_function():
+    """Test the standalone histogram function."""
+    import polars_vec_ops as vec
+
+    df = pl.DataFrame({"a": [[1, 2, 3, 4, 5]]})
+    result = df.select(vec.histogram("a", bins=3))
+    row = result["a"][0]
+
+    np_counts, _ = np.histogram([1, 2, 3, 4, 5], bins=3)
+    assert row["counts"] == np_counts.tolist()
+
+
+def test_histogram_validation_mutual_exclusion():
+    """Test that bins and start/stop/spacing are mutually exclusive."""
+    df = pl.DataFrame({"a": [[1, 2, 3]]})
+
+    with pytest.raises(ValueError, match="Cannot specify both"):
+        df.select(pl.col("a").vec.histogram(bins=3, start=0.0, stop=5.0, spacing=1.0))
+
+    with pytest.raises(ValueError, match="Must specify either"):
+        df.select(pl.col("a").vec.histogram())
+
+
+def test_histogram_validation_missing_range_params():
+    """Test that all of start/stop/spacing must be provided."""
+    df = pl.DataFrame({"a": [[1, 2, 3]]})
+
+    with pytest.raises(ValueError, match="Missing"):
+        df.select(pl.col("a").vec.histogram(start=0.0, stop=5.0))
+
+
+def test_histogram_with_array_dtype():
+    """Test histogram on Array dtype input."""
+    df = pl.DataFrame({"a": [[1, 2, 3, 4, 5]]}).select(
+        pl.col("a").cast(pl.Array(pl.Int64, 5))
+    )
+    result = df.select(pl.col("a").vec.histogram(bins=3))
+    row = result["a"][0]
+
+    np_counts, _ = np.histogram([1, 2, 3, 4, 5], bins=3)
+    assert row["counts"] == np_counts.tolist()
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-s", "-v"])

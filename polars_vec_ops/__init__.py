@@ -302,6 +302,127 @@ class VecOpsNamespace:
             },
         )
 
+    def histogram(
+        self,
+        bins: int | list[float] | pl.Series | pl.Expr | None = None,
+        *,
+        start: float | pl.Expr | None = None,
+        stop: float | pl.Expr | None = None,
+        spacing: float | pl.Expr | None = None,
+    ) -> pl.Expr:
+        """
+        Compute a histogram for each list in the column.
+
+        Bin specification supports two mutually exclusive modes:
+
+        1. ``bins``: an integer number of bins (auto-ranged from data) or
+           explicit bin edges as a list.
+        2. ``start`` / ``stop`` / ``spacing``: evenly spaced bins.
+
+        Any scalar parameter can be a ``pl.Expr`` to derive values per-row
+        from other columns.
+
+        Parameters
+        ----------
+        bins
+            Number of bins (int) or explicit bin edges (list/Series).
+            Can be a ``pl.Expr`` resolving to an integer column.
+        start
+            Left edge of the first bin. Required with ``stop`` and ``spacing``.
+        stop
+            Right edge of the last bin.
+        spacing
+            Width of each bin.
+
+        Returns
+        -------
+        pl.Expr
+            Expression returning a Struct with fields:
+            - ``breakpoints``: ``List[Float64]`` — n+1 bin edges
+            - ``counts``: ``List[UInt32]`` — n bin counts
+
+        Examples
+        --------
+        >>> df = pl.DataFrame({"a": [[1, 2, 3, 4, 5], [10, 20, 30, 40, 50]]})
+        >>> df.select(pl.col("a").vec.histogram(bins=3))
+        shape: (2, 1)
+        ┌─────────────────────────────────────────────────────┐
+        │ a                                                   │
+        │ ---                                                 │
+        │ struct[2]                                           │
+        ╞═════════════════════════════════════════════════════╡
+        │ {[1.0, 2.333, 3.667, 5.0],[2, 1, 2]}               │
+        │ {[10.0, 23.333, 36.667, 50.0],[2, 1, 2]}           │
+        └─────────────────────────────────────────────────────┘
+        """
+        has_bins = bins is not None
+        has_range = any(x is not None for x in (start, stop, spacing))
+
+        if has_bins and has_range:
+            raise ValueError(
+                "Cannot specify both 'bins' and 'start'/'stop'/'spacing'."
+            )
+        if not has_bins and not has_range:
+            raise ValueError(
+                "Must specify either 'bins' or all of 'start', 'stop', 'spacing'."
+            )
+        if has_range and any(x is None for x in (start, stop, spacing)):
+            # Allow Expr for any of them, but all three must be provided
+            non_none = [
+                name
+                for name, val in [("start", start), ("stop", stop), ("spacing", spacing)]
+                if val is not None
+            ]
+            missing = [
+                name
+                for name in ("start", "stop", "spacing")
+                if name not in non_none
+            ]
+            raise ValueError(
+                f"All of 'start', 'stop', 'spacing' are required. Missing: {missing}"
+            )
+
+        args: list[pl.Expr] = [self._expr]
+        kwargs: dict = {"arg_positions": {}}
+
+        if has_bins:
+            if isinstance(bins, pl.Expr):
+                kwargs["mode"] = "bins_int"
+                kwargs["bins_int"] = None
+                kwargs["arg_positions"]["bins_int"] = len(args)
+                args.append(bins)
+            elif isinstance(bins, (list, pl.Series)):
+                bins_list = bins.to_list() if isinstance(bins, pl.Series) else list(bins)
+                kwargs["mode"] = "edges"
+                kwargs["bins_edges"] = [float(x) for x in bins_list]
+            elif isinstance(bins, int):
+                kwargs["mode"] = "bins_int"
+                kwargs["bins_int"] = bins
+            else:
+                raise TypeError(
+                    f"bins must be int, list, pl.Series, or pl.Expr, got {type(bins)}"
+                )
+        else:
+            kwargs["mode"] = "range"
+            for name, value in [("start", start), ("stop", stop), ("spacing", spacing)]:
+                if isinstance(value, pl.Expr):
+                    kwargs["arg_positions"][name] = len(args)
+                    args.append(value)
+                    kwargs[name] = None
+                else:
+                    kwargs[name] = float(value)  # type: ignore[arg-type]
+
+        return register_plugin_function(
+            args=args,
+            plugin_path=LIB,
+            function_name="list_histogram",
+            is_elementwise=True,
+            returns_scalar=False,
+            kwargs=kwargs,
+        )
+
+    hist = histogram
+
 
 def sum(*exprs: str) -> pl.Expr:
     """
@@ -582,3 +703,66 @@ def convolve(
     └───────────────────┘
     """
     return pl.col(expr).vec.convolve(kernel, fill_value, mode)  # type: ignore[attr-defined]
+
+
+def histogram(
+    expr: str,
+    bins: int | list[float] | pl.Series | pl.Expr | None = None,
+    *,
+    start: float | pl.Expr | None = None,
+    stop: float | pl.Expr | None = None,
+    spacing: float | pl.Expr | None = None,
+) -> pl.Expr:
+    """
+    Compute a histogram for each list in the column.
+
+    Bin specification supports two mutually exclusive modes:
+
+    1. ``bins``: an integer number of bins (auto-ranged from data) or
+       explicit bin edges as a list.
+    2. ``start`` / ``stop`` / ``spacing``: evenly spaced bins.
+
+    Any scalar parameter can be a ``pl.Expr`` to derive values per-row
+    from other columns.
+
+    Parameters
+    ----------
+    expr
+        Column name containing lists/arrays.
+    bins
+        Number of bins (int) or explicit bin edges (list/Series).
+        Can be a ``pl.Expr`` resolving to an integer column.
+    start
+        Left edge of the first bin.
+    stop
+        Right edge of the last bin.
+    spacing
+        Width of each bin.
+
+    Returns
+    -------
+    pl.Expr
+        Expression returning a Struct with fields:
+        - ``breakpoints``: ``List[Float64]`` — n+1 bin edges
+        - ``counts``: ``List[UInt32]`` — n bin counts
+
+    Examples
+    --------
+    >>> import polars_vec_ops as vec
+    >>> df = pl.DataFrame({"a": [[1, 2, 3, 4, 5]]})
+    >>> df.select(vec.histogram("a", bins=3))
+    shape: (1, 1)
+    ┌──────────────────────────────────────────────┐
+    │ a                                            │
+    │ ---                                          │
+    │ struct[2]                                    │
+    ╞══════════════════════════════════════════════╡
+    │ {[1.0, 2.333, 3.667, 5.0],[2, 1, 2]}        │
+    └──────────────────────────────────────────────┘
+    """
+    return pl.col(expr).vec.histogram(  # type: ignore[attr-defined]
+        bins, start=start, stop=stop, spacing=spacing,
+    )
+
+
+hist = histogram
