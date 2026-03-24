@@ -309,6 +309,8 @@ class VecOpsNamespace:
         start: float | pl.Expr | None = None,
         stop: float | pl.Expr | None = None,
         spacing: float | pl.Expr | None = None,
+        count_dtype: pl.DataType | type[bool] | type[int] | None = None,
+        include_breakpoints: bool = False,
     ) -> pl.Expr:
         """
         Compute a histogram for each list in the column.
@@ -333,13 +335,27 @@ class VecOpsNamespace:
             Right edge of the last bin.
         spacing
             Width of each bin.
+        count_dtype
+            Data type for the counts field. Smaller types save memory.
+            Accepts ``pl.Boolean`` / ``bool`` (1 bit: any count > 0),
+            ``pl.UInt8`` (max 255), ``pl.UInt16`` (max 65535), or
+            ``pl.UInt32`` / ``int`` (default, max ~4 billion).
+        include_breakpoints
+            If ``False``, omit the ``breakpoints`` field from the output
+            struct, returning only ``counts``. Saves memory when bin edges
+            are already known (e.g. from ``start``/``stop``/``spacing``
+            or explicit ``bins`` list). Default ``True``.
 
         Returns
         -------
         pl.Expr
-            Expression returning a Struct with fields:
+            If ``include_breakpoints=True`` (default when set), returns a
+            Struct with fields:
             - ``breakpoints``: ``List[Float64]`` — n+1 bin edges
-            - ``counts``: ``List[UInt32]`` — n bin counts
+            - ``counts``: ``List[count_dtype]`` — n bin counts
+
+            If ``include_breakpoints=False``, returns ``List[count_dtype]``
+            directly (just the counts, no struct wrapper).
 
         Examples
         --------
@@ -382,8 +398,25 @@ class VecOpsNamespace:
                 f"All of 'start', 'stop', 'spacing' are required. Missing: {missing}"
             )
 
+        # Resolve count_dtype to string for Rust
+        _dtype_map: dict[object, str] = {
+            bool: "bool",
+            int: "u32",
+            pl.Boolean: "bool",
+            pl.UInt8: "u8",
+            pl.UInt16: "u16",
+            pl.UInt32: "u32",
+        }
+        dtype_str: str | None = None
+        if count_dtype is not None:
+            dtype_str = _dtype_map.get(count_dtype)
+            if dtype_str is None:
+                raise TypeError(
+                    f"count_dtype must be pl.Boolean, pl.UInt8, pl.UInt16, pl.UInt32, bool, or int, got {count_dtype!r}"
+                )
+
         args: list[pl.Expr] = [self._expr]
-        kwargs: dict = {"arg_positions": {}}
+        kwargs: dict = {"arg_positions": {}, "count_dtype": dtype_str, "include_breakpoints": include_breakpoints}
 
         if has_bins:
             if isinstance(bins, pl.Expr):
@@ -412,7 +445,7 @@ class VecOpsNamespace:
                 else:
                     kwargs[name] = float(value)  # type: ignore[arg-type]
 
-        return register_plugin_function(
+        result = register_plugin_function(
             args=args,
             plugin_path=LIB,
             function_name="list_histogram",
@@ -420,6 +453,46 @@ class VecOpsNamespace:
             returns_scalar=False,
             kwargs=kwargs,
         )
+
+        # Post-process: cast counts dtype and/or unwrap struct
+        needs_cast = dtype_str is not None and dtype_str != "u32"
+        cast_map = {"bool": pl.Boolean, "u8": pl.UInt8, "u16": pl.UInt16}
+        target = cast_map.get(dtype_str or "") if needs_cast else None
+
+        if not include_breakpoints and target is not None:
+            # Unwrap to just counts list + cast dtype
+            def _unwrap_and_cast(s: pl.Series, _target: pl.DataType = target) -> pl.Series:
+                return (
+                    s.struct.field("counts")
+                    .list.eval(pl.element().cast(_target))
+                    .rename(s.name)
+                )
+            result = result.map_batches(
+                _unwrap_and_cast, return_dtype=pl.List(target),
+            )
+        elif not include_breakpoints:
+            # Unwrap to just counts list (default u32)
+            def _unwrap(s: pl.Series) -> pl.Series:
+                return s.struct.field("counts").rename(s.name)
+            result = result.map_batches(
+                _unwrap, return_dtype=pl.List(pl.UInt32),
+            )
+        elif target is not None:
+            # Keep struct, cast counts dtype
+            def _cast_counts(s: pl.Series, _target: pl.DataType = target) -> pl.Series:
+                fields = s.struct.unnest()
+                fields = fields.with_columns(
+                    pl.col("counts").list.eval(
+                        pl.element().cast(_target)
+                    )
+                )
+                return fields.to_struct(s.name)
+            result = result.map_batches(_cast_counts, return_dtype=pl.Struct({
+                "breakpoints": pl.List(pl.Float64),
+                "counts": pl.List(target),
+            }))
+
+        return result
 
     hist = histogram
 
@@ -712,6 +785,8 @@ def histogram(
     start: float | pl.Expr | None = None,
     stop: float | pl.Expr | None = None,
     spacing: float | pl.Expr | None = None,
+    count_dtype: pl.DataType | type[bool] | type[int] | None = None,
+    include_breakpoints: bool = False,
 ) -> pl.Expr:
     """
     Compute a histogram for each list in the column.
@@ -738,13 +813,23 @@ def histogram(
         Right edge of the last bin.
     spacing
         Width of each bin.
+    count_dtype
+        Data type for the counts field. Smaller types save memory.
+        Accepts ``pl.Boolean`` / ``bool``, ``pl.UInt8``, ``pl.UInt16``,
+        or ``pl.UInt32`` / ``int`` (default).
+    include_breakpoints
+        If ``True``, return a Struct with ``breakpoints`` and ``counts``.
+        If ``False`` (default), return ``List[count_dtype]`` directly.
 
     Returns
     -------
     pl.Expr
-        Expression returning a Struct with fields:
+        If ``include_breakpoints=True``, returns a Struct with fields:
         - ``breakpoints``: ``List[Float64]`` — n+1 bin edges
-        - ``counts``: ``List[UInt32]`` — n bin counts
+        - ``counts``: ``List[count_dtype]`` — n bin counts
+
+        If ``include_breakpoints=False`` (default), returns
+        ``List[count_dtype]`` directly.
 
     Examples
     --------
@@ -752,16 +837,17 @@ def histogram(
     >>> df = pl.DataFrame({"a": [[1, 2, 3, 4, 5]]})
     >>> df.select(vec.histogram("a", bins=3))
     shape: (1, 1)
-    ┌──────────────────────────────────────────────┐
-    │ a                                            │
-    │ ---                                          │
-    │ struct[2]                                    │
-    ╞══════════════════════════════════════════════╡
-    │ {[1.0, 2.333, 3.667, 5.0],[2, 1, 2]}        │
-    └──────────────────────────────────────────────┘
+    ┌───────────┐
+    │ a         │
+    │ ---       │
+    │ list[u32] │
+    ╞═══════════╡
+    │ [2, 1, 2] │
+    └───────────┘
     """
     return pl.col(expr).vec.histogram(  # type: ignore[attr-defined]
         bins, start=start, stop=stop, spacing=spacing,
+        count_dtype=count_dtype, include_breakpoints=include_breakpoints,
     )
 
 

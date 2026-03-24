@@ -837,7 +837,7 @@ def test_vec_convolve_with_groupby():
 def test_histogram_bins_int():
     """Test histogram with integer number of bins."""
     df = pl.DataFrame({"a": [[1, 2, 3, 4, 5]]})
-    result = df.select(pl.col("a").vec.histogram(bins=3))
+    result = df.select(pl.col("a").vec.histogram(bins=3, include_breakpoints=True))
     row = result["a"][0]
 
     np_counts, np_edges = np.histogram([1, 2, 3, 4, 5], bins=3)
@@ -849,7 +849,7 @@ def test_histogram_bins_list():
     """Test histogram with explicit bin edges."""
     df = pl.DataFrame({"a": [[1, 2, 3, 4, 5]]})
     edges = [0.0, 2.5, 5.0]
-    result = df.select(pl.col("a").vec.histogram(bins=edges))
+    result = df.select(pl.col("a").vec.histogram(bins=edges, include_breakpoints=True))
     row = result["a"][0]
 
     np_counts, np_edges = np.histogram([1, 2, 3, 4, 5], bins=edges)
@@ -860,7 +860,7 @@ def test_histogram_bins_list():
 def test_histogram_start_stop_spacing():
     """Test histogram with start/stop/spacing range mode."""
     df = pl.DataFrame({"a": [[1, 2, 3, 4, 5]]})
-    result = df.select(pl.col("a").vec.histogram(start=0.0, stop=6.0, spacing=2.0))
+    result = df.select(pl.col("a").vec.histogram(start=0.0, stop=6.0, spacing=2.0, include_breakpoints=True))
     row = result["a"][0]
 
     np_counts, np_edges = np.histogram([1, 2, 3, 4, 5], bins=[0.0, 2.0, 4.0, 6.0])
@@ -874,7 +874,7 @@ def test_histogram_bins_expr():
         "a": [[1, 2, 3, 4, 5], [10, 20, 30, 40, 50]],
         "n_bins": [2, 5],
     })
-    result = df.select(pl.col("a").vec.histogram(bins=pl.col("n_bins")))
+    result = df.select(pl.col("a").vec.histogram(bins=pl.col("n_bins"), include_breakpoints=True))
 
     # Row 0: 2 bins
     row0 = result["a"][0]
@@ -904,14 +904,13 @@ def test_histogram_range_expr():
     )
 
     # Row 0: bins [0, 2, 4, 6]
-    row0 = result["a"][0]
+    assert result["a"][0].to_list() == [1, 2, 2]
     np_counts0, _ = np.histogram([1, 2, 3, 4, 5], bins=[0, 2, 4, 6])
-    assert row0["counts"] == np_counts0.tolist()
+    assert result["a"][0].to_list() == np_counts0.tolist()
 
     # Row 1: bins [0, 20, 40, 60]
-    row1 = result["a"][1]
     np_counts1, _ = np.histogram([10, 20, 30, 40, 50], bins=[0, 20, 40, 60])
-    assert row1["counts"] == np_counts1.tolist()
+    assert result["a"][1].to_list() == np_counts1.tolist()
 
 
 def test_histogram_null_row():
@@ -919,27 +918,25 @@ def test_histogram_null_row():
     df = pl.DataFrame({"a": [[1, 2, 3], None, [4, 5, 6]]})
     result = df.select(pl.col("a").vec.histogram(bins=2))
 
-    assert result["a"][0]["counts"] is not None
-    assert result["a"][1]["counts"] is None
-    assert result["a"][1]["breakpoints"] is None
-    assert result["a"][2]["counts"] is not None
+    assert result["a"][0] is not None
+    assert result["a"][1] is None
+    assert result["a"][2] is not None
 
 
 def test_histogram_null_elements():
     """Test histogram skips null elements in lists."""
     df = pl.DataFrame({"a": [[1, None, 3, None, 5]]})
     result = df.select(pl.col("a").vec.histogram(bins=[0.0, 2.5, 5.0]))
-    row = result["a"][0]
 
     # Only 1, 3, 5 should be counted (nulls skipped)
     np_counts, _ = np.histogram([1, 3, 5], bins=[0.0, 2.5, 5.0])
-    assert row["counts"] == np_counts.tolist()
+    assert result["a"][0].to_list() == np_counts.tolist()
 
 
 def test_histogram_uniform_data():
     """Test histogram when all values are the same (min == max)."""
     df = pl.DataFrame({"a": [[5, 5, 5, 5]]})
-    result = df.select(pl.col("a").vec.histogram(bins=3))
+    result = df.select(pl.col("a").vec.histogram(bins=3, include_breakpoints=True))
     row = result["a"][0]
 
     # When min==max, should create a single bin [v-0.5, v+0.5]
@@ -954,13 +951,11 @@ def test_histogram_multiple_rows():
 
     assert len(result) == 2
 
-    row0 = result["a"][0]
-    np_counts0, np_edges0 = np.histogram([1, 2, 3], bins=2)
-    assert row0["counts"] == np_counts0.tolist()
+    np_counts0, _ = np.histogram([1, 2, 3], bins=2)
+    assert result["a"][0].to_list() == np_counts0.tolist()
 
-    row1 = result["a"][1]
-    np_counts1, np_edges1 = np.histogram([10, 20, 30], bins=2)
-    assert row1["counts"] == np_counts1.tolist()
+    np_counts1, _ = np.histogram([10, 20, 30], bins=2)
+    assert result["a"][1].to_list() == np_counts1.tolist()
 
 
 def test_histogram_standalone_function():
@@ -969,10 +964,9 @@ def test_histogram_standalone_function():
 
     df = pl.DataFrame({"a": [[1, 2, 3, 4, 5]]})
     result = df.select(vec.histogram("a", bins=3))
-    row = result["a"][0]
 
     np_counts, _ = np.histogram([1, 2, 3, 4, 5], bins=3)
-    assert row["counts"] == np_counts.tolist()
+    assert result["a"][0].to_list() == np_counts.tolist()
 
 
 def test_histogram_validation_mutual_exclusion():
@@ -1000,10 +994,64 @@ def test_histogram_with_array_dtype():
         pl.col("a").cast(pl.Array(pl.Int64, 5))
     )
     result = df.select(pl.col("a").vec.histogram(bins=3))
-    row = result["a"][0]
 
     np_counts, _ = np.histogram([1, 2, 3, 4, 5], bins=3)
+    assert result["a"][0].to_list() == np_counts.tolist()
+
+
+def test_histogram_count_dtype_bool():
+    """Test histogram with boolean count dtype (presence/absence)."""
+    df = pl.DataFrame({"a": [[1, 2, 3, 4, 5]]})
+    result = df.select(pl.col("a").vec.histogram(bins=[0.0, 2.5, 5.0], count_dtype=pl.Boolean))
+    assert result["a"][0].to_list() == [True, True]
+    assert result["a"].dtype == pl.List(pl.Boolean)
+
+
+def test_histogram_count_dtype_u8():
+    """Test histogram with u8 count dtype."""
+    df = pl.DataFrame({"a": [[1, 2, 3, 4, 5]]})
+    result = df.select(pl.col("a").vec.histogram(bins=3, count_dtype=pl.UInt8))
+    np_counts, _ = np.histogram([1, 2, 3, 4, 5], bins=3)
+    assert result["a"][0].to_list() == np_counts.tolist()
+    assert result["a"].dtype == pl.List(pl.UInt8)
+
+
+def test_histogram_count_dtype_u16():
+    """Test histogram with u16 count dtype."""
+    df = pl.DataFrame({"a": [[1, 2, 3, 4, 5]]})
+    result = df.select(pl.col("a").vec.histogram(bins=3, count_dtype=pl.UInt16))
+    np_counts, _ = np.histogram([1, 2, 3, 4, 5], bins=3)
+    assert result["a"][0].to_list() == np_counts.tolist()
+    assert result["a"].dtype == pl.List(pl.UInt16)
+
+
+def test_histogram_include_breakpoints_false():
+    """Test histogram with include_breakpoints=False returns a flat list column."""
+    df = pl.DataFrame({"a": [[1, 2, 3, 4, 5]]})
+    result = df.select(pl.col("a").vec.histogram(bins=3, include_breakpoints=False))
+    np_counts, _ = np.histogram([1, 2, 3, 4, 5], bins=3)
+    assert result["a"][0].to_list() == np_counts.tolist()
+    assert result["a"].dtype == pl.List(pl.UInt32)
+
+
+def test_histogram_include_breakpoints_true():
+    """Test histogram with include_breakpoints=True returns a struct."""
+    df = pl.DataFrame({"a": [[1, 2, 3, 4, 5]]})
+    result = df.select(pl.col("a").vec.histogram(bins=3, include_breakpoints=True))
+    row = result["a"][0]
+    np_counts, np_edges = np.histogram([1, 2, 3, 4, 5], bins=3)
     assert row["counts"] == np_counts.tolist()
+    np.testing.assert_allclose(row["breakpoints"], np_edges.tolist())
+
+
+def test_histogram_count_dtype_bool_empty_bins():
+    """Test boolean dtype correctly shows False for empty bins."""
+    df = pl.DataFrame({"a": [[1, 1, 1]]})
+    result = df.select(
+        pl.col("a").vec.histogram(bins=[0.0, 0.5, 1.0, 1.5, 2.0], count_dtype=pl.Boolean)
+    )
+    # All values are 1.0, which falls in [1.0, 1.5) bin (index 2)
+    assert result["a"][0].to_list() == [False, False, True, False]
 
 
 if __name__ == "__main__":

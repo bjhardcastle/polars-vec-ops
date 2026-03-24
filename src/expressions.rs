@@ -698,8 +698,14 @@ struct HistogramKwargs {
     start: Option<f64>,
     stop: Option<f64>,
     spacing: Option<f64>,
+    #[allow(dead_code)]
+    count_dtype: Option<String>,            // "bool", "u8", "u16", "u32" (default) — cast done in Python
+    include_breakpoints: Option<bool>,      // default true
     arg_positions: HashMap<String, usize>,  // param name -> inputs[] index for Expr params
 }
+
+const MAX_BINS: usize = 10_000;
+
 
 fn histogram_output_type(input_fields: &[Field]) -> PolarsResult<Field> {
     let field = &input_fields[0];
@@ -708,6 +714,9 @@ fn histogram_output_type(input_fields: &[Field]) -> PolarsResult<Field> {
         DataType::List(_) | DataType::Array(_, _) => {},
         dt => polars_bail!(InvalidOperation: "Expected List or Array type, got {:?}", dt),
     }
+    // Note: output type is determined statically; actual dtype is applied at runtime.
+    // We default to UInt32 here since we can't access kwargs in output_type_func.
+    // The runtime code casts to the correct dtype.
     Ok(Field::new(
         field.name().clone(),
         DataType::Struct(vec![
@@ -789,7 +798,8 @@ fn edges_from_bins_int(n_bins: u32, min_val: f64, max_val: f64) -> Vec<f64> {
 /// Count values into bins defined by edges.
 /// Bins are half-open: [edge_i, edge_{i+1}) except last bin [edge_{n-1}, edge_n].
 /// Values outside [edges[0], edges[last]] are excluded.
-fn count_into_bins(values: &[f64], edges: &[f64]) -> Vec<u32> {
+/// Accepts an iterator to avoid allocating a temporary Vec of values.
+fn count_into_bins(values: impl Iterator<Item = f64>, edges: &[f64]) -> Vec<u32> {
     let n_bins = edges.len() - 1;
     let mut counts = vec![0u32; n_bins];
     if n_bins == 0 {
@@ -797,7 +807,7 @@ fn count_into_bins(values: &[f64], edges: &[f64]) -> Vec<u32> {
     }
     let first = edges[0];
     let last = edges[n_bins];
-    for &v in values {
+    for v in values {
         if v < first || v > last || !v.is_finite() {
             continue;
         }
@@ -821,9 +831,32 @@ fn count_into_bins(values: &[f64], edges: &[f64]) -> Vec<u32> {
     counts
 }
 
+/// Validate that the number of bins doesn't exceed the safety limit.
+fn validate_bin_count(edges: &[f64]) -> PolarsResult<()> {
+    let n_bins = edges.len().saturating_sub(1);
+    if n_bins > MAX_BINS {
+        polars_bail!(ComputeError: "Too many bins ({}). Maximum is {}. Use fewer bins or increase MAX_BINS.", n_bins, MAX_BINS);
+    }
+    Ok(())
+}
+
+/// Convert u32 counts to a Series.
+/// Always returns UInt32 to match the declared output schema.
+/// Dtype conversion is handled in the Python wrapper.
+fn counts_to_series(counts: &[u32]) -> Series {
+    Series::new("".into(), counts)
+}
+
+/// Helper to create a finite-value iterator from a Float64Chunked.
+fn finite_values_iter(ca: &Float64Chunked) -> impl Iterator<Item = f64> + '_ {
+    ca.into_iter()
+        .filter_map(|opt| opt.filter(|v| v.is_finite()))
+}
+
 #[polars_expr(output_type_func=histogram_output_type)]
 fn list_histogram(inputs: &[Series], kwargs: HistogramKwargs) -> PolarsResult<Series> {
     let series = &inputs[0];
+    let include_breakpoints = kwargs.include_breakpoints.unwrap_or(true);
 
     // Convert to List if it's an Array
     let series = ensure_list_type(series)?;
@@ -838,16 +871,19 @@ fn list_histogram(inputs: &[Series], kwargs: HistogramKwargs) -> PolarsResult<Se
             .with_name("counts".into());
         let out = StructChunked::from_series(
             series.name().clone(),
-            breakpoints.len(),
+            0,
             [breakpoints.into_series(), counts.into_series()].iter(),
         )?;
         return Ok(out.into_series());
     }
 
-    // Pre-cast expr param columns to the right types
     let mode = kwargs.mode.as_str();
 
-    let mut breakpoints_vec: Vec<Option<Series>> = Vec::with_capacity(n_rows);
+    let mut breakpoints_vec: Vec<Option<Series>> = if include_breakpoints {
+        Vec::with_capacity(n_rows)
+    } else {
+        Vec::new()  // won't be used
+    };
     let mut counts_vec: Vec<Option<Series>> = Vec::with_capacity(n_rows);
 
     // For "edges" mode, resolve edges once (they're the same for every row)
@@ -857,29 +893,30 @@ fn list_histogram(inputs: &[Series], kwargs: HistogramKwargs) -> PolarsResult<Se
         if edges.len() < 2 {
             polars_bail!(ComputeError: "bin edges must have at least 2 elements, got {}", edges.len());
         }
+        validate_bin_count(&edges)?;
         Some(edges)
     } else {
         None
     };
 
+    macro_rules! push_null_row {
+        () => {
+            if include_breakpoints { breakpoints_vec.push(None); }
+            counts_vec.push(None);
+        }
+    }
+
     for i in 0..n_rows {
         let row_data = list_chunked.get_as_series(i);
 
         if row_data.is_none() {
-            breakpoints_vec.push(None);
-            counts_vec.push(None);
+            push_null_row!();
             continue;
         }
 
         let row_series = row_data.unwrap();
         let row_f64 = row_series.cast(&DataType::Float64)?;
         let ca = row_f64.f64()?;
-
-        // Collect non-null finite values
-        let values: Vec<f64> = ca
-            .into_iter()
-            .filter_map(|opt| opt.filter(|v| v.is_finite()))
-            .collect();
 
         // Determine edges for this row
         let edges = match mode {
@@ -896,22 +933,29 @@ fn list_histogram(inputs: &[Series], kwargs: HistogramKwargs) -> PolarsResult<Se
                 )?;
                 match n_bins {
                     None => {
-                        breakpoints_vec.push(None);
-                        counts_vec.push(None);
+                        push_null_row!();
                         continue;
                     }
                     Some(0) => {
                         polars_bail!(ComputeError: "bins must be positive, got 0");
                     }
                     Some(n) => {
-                        if values.is_empty() {
-                            breakpoints_vec.push(None);
-                            counts_vec.push(None);
+                        // bins_int needs min/max, so we must scan values first
+                        let mut min_val = f64::INFINITY;
+                        let mut max_val = f64::NEG_INFINITY;
+                        let mut has_values = false;
+                        for v in finite_values_iter(ca) {
+                            if v < min_val { min_val = v; }
+                            if v > max_val { max_val = v; }
+                            has_values = true;
+                        }
+                        if !has_values {
+                            push_null_row!();
                             continue;
                         }
-                        let min_val = values.iter().cloned().fold(f64::INFINITY, f64::min);
-                        let max_val = values.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
-                        edges_from_bins_int(n, min_val, max_val)
+                        let edges = edges_from_bins_int(n, min_val, max_val);
+                        validate_bin_count(&edges)?;
+                        edges
                     }
                 }
             }
@@ -939,12 +983,13 @@ fn list_histogram(inputs: &[Series], kwargs: HistogramKwargs) -> PolarsResult<Se
                 )?;
                 match (start, stop, spacing) {
                     (Some(s), Some(e), Some(sp)) => {
-                        edges_from_range(s, e, sp)?
+                        let edges = edges_from_range(s, e, sp)?;
+                        validate_bin_count(&edges)?;
+                        edges
                     }
                     _ => {
                         // Null in any param -> null output
-                        breakpoints_vec.push(None);
-                        counts_vec.push(None);
+                        push_null_row!();
                         continue;
                     }
                 }
@@ -954,24 +999,33 @@ fn list_histogram(inputs: &[Series], kwargs: HistogramKwargs) -> PolarsResult<Se
             }
         };
 
-        let bin_counts = count_into_bins(&values, &edges);
+        // Count into bins using iterator (avoids collecting all values)
+        let bin_counts = count_into_bins(finite_values_iter(ca), &edges);
 
-        let bp_series = Series::new("".into(), &edges);
-        let ct_series = Series::new("".into(), &bin_counts);
-        breakpoints_vec.push(Some(bp_series));
-        counts_vec.push(Some(ct_series));
+        if include_breakpoints {
+            breakpoints_vec.push(Some(Series::new("".into(), &edges)));
+        }
+        counts_vec.push(Some(counts_to_series(&bin_counts)));
     }
 
     // Build struct output
-    let breakpoints_list = ListChunked::from_iter(breakpoints_vec.into_iter())
-        .with_name("breakpoints".into());
     let counts_list = ListChunked::from_iter(counts_vec.into_iter())
-        .with_name("counts".into());
+        .with_name("counts".into())
+        .into_series();
+
+    let breakpoints_list = if include_breakpoints {
+        ListChunked::from_iter(breakpoints_vec.into_iter())
+            .with_name("breakpoints".into())
+            .into_series()
+    } else {
+        // All-null column with zero per-row allocations
+        Series::new_null("breakpoints".into(), n_rows)
+    };
 
     let out = StructChunked::from_series(
         series.name().clone(),
-        breakpoints_list.len(),
-        [breakpoints_list.into_series(), counts_list.into_series()].iter(),
+        n_rows,
+        [breakpoints_list, counts_list].iter(),
     )?;
     Ok(out.into_series())
 }
