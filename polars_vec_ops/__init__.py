@@ -461,7 +461,7 @@ class VecOpsNamespace:
 
         if not include_breakpoints and target is not None:
             # Unwrap to just counts list + cast dtype
-            def _unwrap_and_cast(s: pl.Series, _target: pl.DataType = target) -> pl.Series:
+            def _unwrap_and_cast(s: pl.Series, _target: type[pl.DataType] = target) -> pl.Series:
                 return (
                     s.struct.field("counts")
                     .list.eval(pl.element().cast(_target))
@@ -479,7 +479,7 @@ class VecOpsNamespace:
             )
         elif target is not None:
             # Keep struct, cast counts dtype
-            def _cast_counts(s: pl.Series, _target: pl.DataType = target) -> pl.Series:
+            def _cast_counts(s: pl.Series, _target: type[pl.DataType] = target) -> pl.Series:
                 fields = s.struct.unnest()
                 fields = fields.with_columns(
                     pl.col("counts").list.eval(
