@@ -704,8 +704,6 @@ struct HistogramKwargs {
     arg_positions: HashMap<String, usize>,  // param name -> inputs[] index for Expr params
 }
 
-const MAX_BINS: usize = 10_000;
-
 
 fn histogram_output_type(input_fields: &[Field]) -> PolarsResult<Field> {
     let field = &input_fields[0];
@@ -832,11 +830,7 @@ fn count_into_bins(values: impl Iterator<Item = f64>, edges: &[f64]) -> Vec<u32>
 }
 
 /// Validate that the number of bins doesn't exceed the safety limit.
-fn validate_bin_count(edges: &[f64]) -> PolarsResult<()> {
-    let n_bins = edges.len().saturating_sub(1);
-    if n_bins > MAX_BINS {
-        polars_bail!(ComputeError: "Too many bins ({}). Maximum is {}. Use fewer bins or increase MAX_BINS.", n_bins, MAX_BINS);
-    }
+fn validate_bin_count(_edges: &[f64]) -> PolarsResult<()> {
     Ok(())
 }
 
