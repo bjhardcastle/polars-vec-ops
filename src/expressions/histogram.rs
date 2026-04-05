@@ -256,30 +256,21 @@ fn count_into_bins_uniform_slice_4buf(
     let inv_step = n_bins as f64 / range;
     let nb = n_bins - 1;
 
-    let chunks = values.chunks_exact(8);
+    let chunks = values.chunks_exact(4);
     let rem = chunks.remainder();
     for chunk in chunks {
-        // 8 bin computations: CPU can pipeline all 8 FP muls simultaneously (AVX-512)
-        let b0a = (((chunk[0] - first) * inv_step) as usize).min(nb);
-        let b1a = (((chunk[1] - first) * inv_step) as usize).min(nb);
-        let b2a = (((chunk[2] - first) * inv_step) as usize).min(nb);
-        let b3a = (((chunk[3] - first) * inv_step) as usize).min(nb);
-        let b0b = (((chunk[4] - first) * inv_step) as usize).min(nb);
-        let b1b = (((chunk[5] - first) * inv_step) as usize).min(nb);
-        let b2b = (((chunk[6] - first) * inv_step) as usize).min(nb);
-        let b3b = (((chunk[7] - first) * inv_step) as usize).min(nb);
-        // First wave of stores to 4 separate arrays
-        s0[b0a] += 1;
-        s1[b1a] += 1;
-        s2[b2a] += 1;
-        s3[b3a] += 1;
-        // Second wave: same buffers; 2% chance of same-bin conflict within a buffer
-        s0[b0b] += 1;
-        s1[b1b] += 1;
-        s2[b2b] += 1;
-        s3[b3b] += 1;
+        // 4 independent bin computations — CPU can pipeline all 4 simultaneously
+        let b0 = (((chunk[0] - first) * inv_step) as usize).min(nb);
+        let b1 = (((chunk[1] - first) * inv_step) as usize).min(nb);
+        let b2 = (((chunk[2] - first) * inv_step) as usize).min(nb);
+        let b3 = (((chunk[3] - first) * inv_step) as usize).min(nb);
+        // Stores to 4 separate arrays — no RAW hazards, CPU can execute in parallel
+        s0[b0] += 1;
+        s1[b1] += 1;
+        s2[b2] += 1;
+        s3[b3] += 1;
     }
-    // Handle remaining elements (< 8) in s0
+    // Handle remaining elements (< 4) in s0
     for &v in rem {
         let bin = (((v - first) * inv_step) as usize).min(nb);
         s0[bin] += 1;
