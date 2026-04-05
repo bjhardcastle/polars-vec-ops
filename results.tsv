@@ -25,3 +25,4 @@ d0a5170	5000000	20.7	307.1	19.8	1.306	discard	two-pass direct scatter-add: skip 
 6c95ff6	5000000	22.6	199.5	19.8	1.289	keep	lto=thin with codegen-units=4: 7.7% wall time reduction via cross-module inlining; memory within noise
 0b557fe	5000000	22.7	201.5	19.8	1.290	discard	lto=fat slightly slower than lto=thin (200.1ms vs 199.5ms) — thin LTO wins
 3b9398d	5000000	22.6	209.4	19.8	1.292	discard	8-value 4-buffer scatter-add: 5% wall time regression vs 4-value — same-bin conflicts or ILP overhead
+e2633be	5000000	22.7	318.9	19.8	1.330	discard	split filter+copy+min/max into 2 passes: 60% wall time regression — fused loop wins
