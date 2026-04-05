@@ -1,7 +1,6 @@
 #![allow(clippy::unused_unit)]
 use std::collections::HashMap;
 use polars::prelude::*;
-use polars_arrow::array::PrimitiveArray;
 use pyo3_polars::derive::polars_expr;
 
 // Helper function to convert Array to List if needed
@@ -1009,82 +1008,6 @@ fn list_histogram(inputs: &[Series], kwargs: HistogramKwargs) -> PolarsResult<Se
         }
     }
 
-    // FAST PATH: bins_int with fixed n_bins and Float64 inner type.
-    // Bypasses 100K per-row get_as_series()/cast()/ChunkedArray iterator overhead
-    // by accessing the flat Arrow buffer and offsets directly.
-    'fast_path: {
-        if mode == "bins_int" && kwargs.arg_positions.get("bins_int").is_none() {
-            if let Some(n_bins) = kwargs.bins_int {
-                if n_bins == 0 {
-                    polars_bail!(ComputeError: "bins must be positive, got 0");
-                }
-                let n = n_bins as usize;
-                // Verify all chunks have Float64 inner type before committing to fast path
-                for chunk in list_chunked.downcast_iter() {
-                    if chunk.values().as_any().downcast_ref::<PrimitiveArray<f64>>().is_none() {
-                        break 'fast_path;
-                    }
-                }
-                // All chunks are Float64 — use direct slice access
-                for chunk in list_chunked.downcast_iter() {
-                    let row_valid = chunk.validity();
-                    let offsets = chunk.offsets().as_slice();
-                    let float_arr = chunk.values().as_any().downcast_ref::<PrimitiveArray<f64>>().unwrap();
-                    let all_floats: &[f64] = float_arr.values();
-                    let inner_valid = float_arr.validity();
-
-                    for row in 0..chunk.len() {
-                        // Check row-level null
-                        if row_valid.map_or(false, |v| !v.get_bit(row)) {
-                            push_null_row!();
-                            continue;
-                        }
-                        let start = offsets[row] as usize;
-                        let end = offsets[row + 1] as usize;
-                        let row_slice = &all_floats[start..end];
-
-                        // Collect finite (and non-null if inner validity present) values
-                        values_cache.clear();
-                        if let Some(valid) = inner_valid {
-                            for (j, &v) in row_slice.iter().enumerate() {
-                                if valid.get_bit(start + j) && v.is_finite() {
-                                    values_cache.push(v);
-                                }
-                            }
-                        } else {
-                            for &v in row_slice {
-                                if v.is_finite() { values_cache.push(v); }
-                            }
-                        }
-
-                        if values_cache.is_empty() {
-                            push_null_row!();
-                            continue;
-                        }
-                        let mut min_val = values_cache[0];
-                        let mut max_val = values_cache[0];
-                        for &v in &values_cache[1..] {
-                            if v < min_val { min_val = v; }
-                            if v > max_val { max_val = v; }
-                        }
-                        let (first, last) = if min_val == max_val {
-                            (min_val - 0.5, min_val + 0.5)
-                        } else {
-                            (min_val, max_val)
-                        };
-                        count_into_bins_uniform_slice(&values_cache, n, first, last, &mut scratch);
-                        if let Some(ref mut b) = bp_builder {
-                            let edges = edges_from_bins_int(n_bins, min_val, max_val);
-                            b.append_slice(&edges);
-                        }
-                        counts_builder.append_slice(&scratch);
-                    }
-                }
-                // Fast path completed — skip the slow row loop
-                break 'fast_path;
-            }
-        }
-
     for i in 0..n_rows {
         let row_data = list_chunked.get_as_series(i);
 
@@ -1209,7 +1132,6 @@ fn list_histogram(inputs: &[Series], kwargs: HistogramKwargs) -> PolarsResult<Se
         }
         counts_builder.append_slice(bin_counts);
     }
-    } // end 'fast_path block
 
     // Build struct output from pre-allocated flat buffers (single allocation path)
     let counts_list = counts_builder.finish().into_series();
