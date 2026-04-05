@@ -948,28 +948,20 @@ fn count_into_bins_uniform_slice_4buf(
         let b1 = (((chunk[1] - first) * inv_step) as usize).min(nb);
         let b2 = (((chunk[2] - first) * inv_step) as usize).min(nb);
         let b3 = (((chunk[3] - first) * inv_step) as usize).min(nb);
-        // SAFETY: b0..b3 are clamped to [0, nb] = [0, n_bins-1]; all vecs have len n_bins.
-        // Eliminates 4 redundant bounds checks per element (100M total) in the hot path.
-        unsafe {
-            *s0.get_unchecked_mut(b0) += 1;
-            *s1.get_unchecked_mut(b1) += 1;
-            *s2.get_unchecked_mut(b2) += 1;
-            *s3.get_unchecked_mut(b3) += 1;
-        }
+        // Stores to 4 separate arrays — no RAW hazards, CPU can execute in parallel
+        s0[b0] += 1;
+        s1[b1] += 1;
+        s2[b2] += 1;
+        s3[b3] += 1;
     }
     // Handle remaining elements (< 4) in s0
     for &v in rem {
         let bin = (((v - first) * inv_step) as usize).min(nb);
-        // SAFETY: bin is clamped to [0, nb] = [0, n_bins-1]
-        unsafe { *s0.get_unchecked_mut(bin) += 1; }
+        s0[bin] += 1;
     }
-    // Merge s1/s2/s3 into s0 — unsafe eliminates n_bins bounds checks in the merge pass
+    // Merge s1/s2/s3 into s0
     for i in 0..n_bins {
-        // SAFETY: i < n_bins; all vecs have length n_bins
-        unsafe {
-            *s0.get_unchecked_mut(i) +=
-                s1.get_unchecked(i) + s2.get_unchecked(i) + s3.get_unchecked(i);
-        }
+        s0[i] += s1[i] + s2[i] + s3[i];
     }
 }
 
