@@ -1008,6 +1008,112 @@ fn list_histogram(inputs: &[Series], kwargs: HistogramKwargs) -> PolarsResult<Se
     }
 
     let mode = kwargs.mode.as_str();
+
+    // ── Parallel fast path ───────────────────────────────────────────────────
+    // Conditions: bins_int mode, scalar (non-per-row) n_bins, no null rows,
+    // no breakpoints requested.  All rows produce exactly n_bins counts, so we
+    // pre-allocate a flat u32 buffer, scatter rows across CPU cores via
+    // std::thread::scope (no new crates), and build the Polars output
+    // sequentially from the flat buffer.
+    if mode == "bins_int"
+        && kwargs.arg_positions.get("bins_int").is_none()
+        && !kwargs.include_breakpoints.unwrap_or(true)  // include_breakpoints=False
+        && list_chunked.null_count() == 0
+        && kwargs.bins_int.is_some()
+    {
+        let n_bins = kwargs.bins_int.unwrap() as usize;
+        if n_bins == 0 {
+            polars_bail!(ComputeError: "bins must be positive, got 0");
+        }
+        let n_threads = std::thread::available_parallelism()
+            .map(|p| p.get())
+            .unwrap_or(4)
+            .min(n_rows);
+
+        // Single flat buffer: n_rows × n_bins u32 values.
+        // Threads write to non-overlapping slices — no synchronisation needed.
+        let mut flat_counts = vec![0u32; n_rows * n_bins];
+        let chunk_rows = (n_rows + n_threads - 1) / n_threads;
+
+        {
+            let out_chunks: Vec<&mut [u32]> = flat_counts
+                .chunks_mut(chunk_rows * n_bins)
+                .collect();
+
+            std::thread::scope(|s| {
+                for (t_idx, out_chunk) in out_chunks.into_iter().enumerate() {
+                    let start_row = t_idx * chunk_rows;
+                    let end_row = (start_row + chunk_rows).min(n_rows);
+                    let lc: &ListChunked = &list_chunked;
+
+                    s.spawn(move || {
+                        // Each thread owns its scratch buffers — no sharing, no locks.
+                        let mut sc0 = vec![0u32; n_bins];
+                        let mut sc1 = vec![0u32; n_bins];
+                        let mut sc2 = vec![0u32; n_bins];
+                        let mut sc3 = vec![0u32; n_bins];
+                        let mut vc: Vec<f64> = Vec::with_capacity(1024);
+
+                        for i in start_row..end_row {
+                            let offset = (i - start_row) * n_bins;
+                            let row_series = match lc.get_as_series(i) {
+                                None => { out_chunk[offset..offset + n_bins].fill(0); continue; }
+                                Some(s) => s,
+                            };
+                            let row_f64 = row_series.cast(&DataType::Float64).expect("cast f64");
+                            let ca = row_f64.f64().expect("f64 chunked");
+
+                            vc.clear();
+                            vc.extend(finite_values_iter(ca));
+                            if vc.is_empty() {
+                                out_chunk[offset..offset + n_bins].fill(0);
+                                continue;
+                            }
+
+                            let mut min_val = vc[0];
+                            let mut max_val = vc[0];
+                            for &v in &vc[1..] {
+                                if v < min_val { min_val = v; }
+                                if v > max_val { max_val = v; }
+                            }
+                            let (first, last) = if min_val == max_val {
+                                (min_val - 0.5, min_val + 0.5)
+                            } else {
+                                (min_val, max_val)
+                            };
+
+                            count_into_bins_uniform_slice_4buf(
+                                &vc, n_bins, first, last,
+                                &mut sc0, &mut sc1, &mut sc2, &mut sc3,
+                            );
+                            out_chunk[offset..offset + n_bins].copy_from_slice(&sc0);
+                        }
+                    });
+                }
+            });
+        }
+
+        // Sequential builder pass from flat buffer — just memcpy into polars
+        let mut counts_builder = ListPrimitiveChunkedBuilder::<UInt32Type>::new(
+            "counts".into(),
+            n_rows,
+            n_rows * n_bins,
+            DataType::UInt32,
+        );
+        for row in 0..n_rows {
+            counts_builder.append_slice(&flat_counts[row * n_bins..(row + 1) * n_bins]);
+        }
+        let counts_list = counts_builder.finish().into_series();
+        let breakpoints_list = Series::new_null("breakpoints".into(), n_rows);
+        let out = StructChunked::from_series(
+            series.name().clone(),
+            n_rows,
+            [breakpoints_list, counts_list].iter(),
+        )?;
+        return Ok(out.into_series());
+    }
+    // ── end parallel fast path ───────────────────────────────────────────────
+
     // "bins_int" and "range" always produce uniformly-spaced edges — use O(1) bin assignment.
     let use_uniform_bins = mode == "bins_int" || mode == "range";
 
