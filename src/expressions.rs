@@ -1008,8 +1008,17 @@ fn bins_int_parallel_flat(
     // Single flat output buffer — no per-thread duplication
     let mut flat_counts = vec![0u32; n_rows * n_bins];
 
+    // Use physical cores only: on hyperthreaded machines, available_parallelism returns
+    // logical CPUs (2× physical). For scatter-add workloads the two hyperthreads on the
+    // same physical core share L1/L2 and compete for execution resources — using only
+    // physical cores (n/2) gives each thread exclusive core access and often beats 2× HT.
     let n_threads = std::thread::available_parallelism()
-        .map(|n| n.get())
+        .map(|n| {
+            let logical = n.get();
+            // Detect HT: if cpu_count is even and > 1, cap at half (physical cores).
+            // This is a heuristic; adjust if the machine has non-HT even logical CPUs.
+            if logical > 1 && logical % 2 == 0 { logical / 2 } else { logical }
+        })
         .unwrap_or(4)
         .min(n_rows);
 
