@@ -927,12 +927,6 @@ fn list_histogram(inputs: &[Series], kwargs: HistogramKwargs) -> PolarsResult<Se
     // "bins_int" and "range" always produce uniformly-spaced edges — use O(1) bin assignment.
     let use_uniform_bins = mode == "bins_int" || mode == "range";
 
-    let mut breakpoints_vec: Vec<Option<Series>> = if include_breakpoints {
-        Vec::with_capacity(n_rows)
-    } else {
-        Vec::new()  // won't be used
-    };
-    let mut counts_vec: Vec<Option<Series>> = Vec::with_capacity(n_rows);
     // Single scratch buffer reused across all rows to avoid N heap allocations
     let mut scratch: Vec<u32> = Vec::new();
 
@@ -949,10 +943,38 @@ fn list_histogram(inputs: &[Series], kwargs: HistogramKwargs) -> PolarsResult<Se
         None
     };
 
+    // Estimate bins for pre-allocation capacity (doesn't affect correctness)
+    let n_bins_hint: usize = match mode {
+        "bins_int" if kwargs.arg_positions.get("bins_int").is_none() => {
+            kwargs.bins_int.unwrap_or(50) as usize
+        },
+        "edges" => static_edges.as_ref().map(|e| e.len().saturating_sub(1)).unwrap_or(50),
+        _ => 50,
+    };
+
+    // Use ListPrimitiveChunkedBuilder to pre-allocate a single flat buffer for all counts,
+    // eliminating N per-row Series::new() calls and the intermediate Vec<Option<Series>>.
+    let mut counts_builder = ListPrimitiveChunkedBuilder::<UInt32Type>::new(
+        "counts".into(),
+        n_rows,
+        n_rows * n_bins_hint,
+        DataType::UInt32,
+    );
+    let mut bp_builder = if include_breakpoints {
+        Some(ListPrimitiveChunkedBuilder::<Float64Type>::new(
+            "breakpoints".into(),
+            n_rows,
+            n_rows * (n_bins_hint + 1),
+            DataType::Float64,
+        ))
+    } else {
+        None
+    };
+
     macro_rules! push_null_row {
         () => {
-            if include_breakpoints { breakpoints_vec.push(None); }
-            counts_vec.push(None);
+            if let Some(ref mut b) = bp_builder { b.append_opt_slice(None); }
+            counts_builder.append_opt_slice(None);
         }
     }
 
@@ -1017,11 +1039,11 @@ fn list_histogram(inputs: &[Series], kwargs: HistogramKwargs) -> PolarsResult<Se
                             last,
                             &mut scratch,
                         );
-                        if include_breakpoints {
+                        if let Some(ref mut b) = bp_builder {
                             let edges = edges_from_bins_int(n, min_val, max_val);
-                            breakpoints_vec.push(Some(Series::new("".into(), &edges)));
+                            b.append_slice(&edges);
                         }
-                        counts_vec.push(Some(counts_to_series(&scratch)));
+                        counts_builder.append_slice(&scratch);
                         continue;
                     }
                 }
@@ -1075,21 +1097,17 @@ fn list_histogram(inputs: &[Series], kwargs: HistogramKwargs) -> PolarsResult<Se
         }
         let bin_counts = &scratch;
 
-        if include_breakpoints {
-            breakpoints_vec.push(Some(Series::new("".into(), &edges)));
+        if let Some(ref mut b) = bp_builder {
+            b.append_slice(&edges);
         }
-        counts_vec.push(Some(counts_to_series(&bin_counts)));
+        counts_builder.append_slice(bin_counts);
     }
 
-    // Build struct output
-    let counts_list = ListChunked::from_iter(counts_vec.into_iter())
-        .with_name("counts".into())
-        .into_series();
+    // Build struct output from pre-allocated flat buffers (single allocation path)
+    let counts_list = counts_builder.finish().into_series();
 
-    let breakpoints_list = if include_breakpoints {
-        ListChunked::from_iter(breakpoints_vec.into_iter())
-            .with_name("breakpoints".into())
-            .into_series()
+    let breakpoints_list = if let Some(b) = bp_builder {
+        b.finish().into_series()
     } else {
         // All-null column with zero per-row allocations
         Series::new_null("breakpoints".into(), n_rows)
