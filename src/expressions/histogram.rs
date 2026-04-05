@@ -307,7 +307,9 @@ fn finite_values_iter(ca: &Float64Chunked) -> impl Iterator<Item = f64> + '_ {
 ///
 /// Fast path: if the ListChunked is a single chunk with Float64 values and no
 /// value-level nulls, threads receive direct `&[f64]` slices via Arrow offsets+values
-/// buffers — avoiding 100K × (get_as_series + cast + f64) overhead per row.
+/// buffers. The hot path further eliminates the `values_cache` intermediate buffer
+/// by using two passes over the original slice: pass 1 finds min/max (LLVM-vectorizable),
+/// pass 2 scatter-adds directly — avoiding 8KB write + 8KB read per row.
 fn bins_int_parallel_flat(
     list_chunked: &ListChunked,
     name: PlSmallStr,
@@ -368,30 +370,61 @@ fn bins_int_parallel_flat(
                     let mut s1 = vec![0u32; n_bins];
                     let mut s2 = vec![0u32; n_bins];
                     let mut s3 = vec![0u32; n_bins];
-                    let mut values_cache = Vec::<f64>::with_capacity(1024);
+                    // values_cache used only for the rare has_non_finite fallback path
+                    let mut values_cache = Vec::<f64>::new();
 
                     for i in start_row..end_row {
                         let out_offset = (i - start_row) * n_bins;
                         let out_slice = &mut output_chunk[out_offset..out_offset + n_bins];
 
-                        // Fused filter+copy+min/max in one pass
-                        values_cache.clear();
-                        let mut min_val = f64::INFINITY;
-                        let mut max_val = f64::NEG_INFINITY;
-
                         if let Some((offsets, values_flat)) = direct_data {
                             // Direct Arrow buffer path: zero-copy slice into flat values buffer.
-                            // Avoids get_as_series + cast + f64() overhead entirely.
                             let start = offsets[i] as usize;
                             let end = offsets[i + 1] as usize;
                             let slice = &values_flat[start..end];
+
+                            // Pass 1: find min/max and detect non-finite values.
+                            // Simple loops without branch-producing push() are more
+                            // easily auto-vectorized by LLVM (no aliasing, no realloc).
+                            let mut min_val = f64::INFINITY;
+                            let mut max_val = f64::NEG_INFINITY;
+                            let mut has_non_finite = false;
                             for &v in slice {
                                 if v.is_finite() {
                                     if v < min_val { min_val = v; }
                                     if v > max_val { max_val = v; }
-                                    values_cache.push(v);
+                                } else {
+                                    has_non_finite = true;
                                 }
                             }
+
+                            if min_val > max_val {
+                                out_slice.fill(0);
+                                continue;
+                            }
+                            let (first, last) = if min_val == max_val {
+                                (min_val - 0.5, min_val + 0.5)
+                            } else {
+                                (min_val, max_val)
+                            };
+
+                            if !has_non_finite {
+                                // All finite: scatter-add directly on original slice.
+                                // Eliminates 8KB write (to values_cache) + 8KB read per row.
+                                count_into_bins_uniform_slice_4buf(
+                                    slice, n_bins, first, last,
+                                    &mut s0, &mut s1, &mut s2, &mut s3,
+                                );
+                            } else {
+                                // Rare path: filter into cache, then scatter-add
+                                values_cache.clear();
+                                values_cache.extend(slice.iter().copied().filter(|v| v.is_finite()));
+                                count_into_bins_uniform_slice_4buf(
+                                    &values_cache, n_bins, first, last,
+                                    &mut s0, &mut s1, &mut s2, &mut s3,
+                                );
+                            }
+                            out_slice.copy_from_slice(&s0);
                         } else {
                             // Fallback: Polars API path (handles multi-chunk, non-f64, nullable values)
                             let row_series = match list_chunked.get_as_series(i) {
@@ -414,6 +447,9 @@ fn bins_int_parallel_flat(
                                     return;
                                 }
                             };
+                            values_cache.clear();
+                            let mut min_val = f64::INFINITY;
+                            let mut max_val = f64::NEG_INFINITY;
                             let cont = if ca.null_count() == 0 { ca.cont_slice().ok() } else { None };
                             match cont {
                                 Some(slice) => {
@@ -433,24 +469,21 @@ fn bins_int_parallel_flat(
                                     }
                                 }
                             }
+                            if values_cache.is_empty() {
+                                out_slice.fill(0);
+                                continue;
+                            }
+                            let (first, last) = if min_val == max_val {
+                                (min_val - 0.5, min_val + 0.5)
+                            } else {
+                                (min_val, max_val)
+                            };
+                            count_into_bins_uniform_slice_4buf(
+                                &values_cache, n_bins, first, last,
+                                &mut s0, &mut s1, &mut s2, &mut s3,
+                            );
+                            out_slice.copy_from_slice(&s0);
                         }
-
-                        if values_cache.is_empty() {
-                            out_slice.fill(0);
-                            continue;
-                        }
-                        let (first, last) = if min_val == max_val {
-                            (min_val - 0.5, min_val + 0.5)
-                        } else {
-                            (min_val, max_val)
-                        };
-
-                        count_into_bins_uniform_slice_4buf(
-                            &values_cache, n_bins, first, last,
-                            &mut s0, &mut s1, &mut s2, &mut s3,
-                        );
-
-                        out_slice.copy_from_slice(&s0);
                     }
                 });
             }
