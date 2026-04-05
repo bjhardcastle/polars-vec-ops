@@ -1062,46 +1062,66 @@ fn bins_int_parallel_flat(
                             }
                         };
 
-                        // Fused filter+copy+min/max in one pass: avoids a second scan of
-                        // values_cache (previously: extend loop + separate min/max loop).
-                        values_cache.clear();
-                        let mut min_val = f64::INFINITY;
-                        let mut max_val = f64::NEG_INFINITY;
+                        // Two-pass direct scatter-add: skip values_cache copy when all
+                        // values are finite.  Pass 1 scans for min/max + counts finites.
+                        // If all finite, scatter-add directly on the contiguous slice
+                        // (avoids ~8 KB write per row = ~800 MB total cache pressure).
+                        // Falls back to values_cache only when non-finite values exist.
                         let cont = if ca.null_count() == 0 { ca.cont_slice().ok() } else { None };
-                        match cont {
-                            Some(slice) => {
-                                for &v in slice {
-                                    if v.is_finite() {
-                                        if v < min_val { min_val = v; }
-                                        if v > max_val { max_val = v; }
-                                        values_cache.push(v);
-                                    }
-                                }
-                            },
-                            None => {
-                                for v in finite_values_iter(ca) {
+                        if let Some(slice) = cont {
+                            // Pass 1: min/max and finite count in one scan
+                            let mut min_val = f64::INFINITY;
+                            let mut max_val = f64::NEG_INFINITY;
+                            let mut n_finite = 0usize;
+                            for &v in slice {
+                                if v.is_finite() {
                                     if v < min_val { min_val = v; }
                                     if v > max_val { max_val = v; }
-                                    values_cache.push(v);
+                                    n_finite += 1;
                                 }
                             }
-                        }
-
-                        if values_cache.is_empty() {
-                            out_slice.fill(0);
-                            continue;
-                        }
-                        let (first, last) = if min_val == max_val {
-                            (min_val - 0.5, min_val + 0.5)
+                            if n_finite == 0 { out_slice.fill(0); continue; }
+                            let (first, last) = if min_val == max_val {
+                                (min_val - 0.5, min_val + 0.5)
+                            } else {
+                                (min_val, max_val)
+                            };
+                            if n_finite == slice.len() {
+                                // All finite: scatter-add directly on slice, no copy
+                                count_into_bins_uniform_slice_4buf(
+                                    slice, n_bins, first, last,
+                                    &mut s0, &mut s1, &mut s2, &mut s3,
+                                );
+                            } else {
+                                // Some non-finite: copy filtered values then scatter-add
+                                values_cache.clear();
+                                for &v in slice { if v.is_finite() { values_cache.push(v); } }
+                                count_into_bins_uniform_slice_4buf(
+                                    &values_cache, n_bins, first, last,
+                                    &mut s0, &mut s1, &mut s2, &mut s3,
+                                );
+                            }
                         } else {
-                            (min_val, max_val)
-                        };
-
-                        count_into_bins_uniform_slice_4buf(
-                            &values_cache, n_bins, first, last,
-                            &mut s0, &mut s1, &mut s2, &mut s3,
-                        );
-
+                            // Null values present: collect finite values via iterator
+                            values_cache.clear();
+                            let mut min_val = f64::INFINITY;
+                            let mut max_val = f64::NEG_INFINITY;
+                            for v in finite_values_iter(ca) {
+                                if v < min_val { min_val = v; }
+                                if v > max_val { max_val = v; }
+                                values_cache.push(v);
+                            }
+                            if values_cache.is_empty() { out_slice.fill(0); continue; }
+                            let (first, last) = if min_val == max_val {
+                                (min_val - 0.5, min_val + 0.5)
+                            } else {
+                                (min_val, max_val)
+                            };
+                            count_into_bins_uniform_slice_4buf(
+                                &values_cache, n_bins, first, last,
+                                &mut s0, &mut s1, &mut s2, &mut s3,
+                            );
+                        }
                         out_slice.copy_from_slice(&s0);
                     }
                 });
