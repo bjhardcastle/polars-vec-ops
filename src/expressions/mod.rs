@@ -1,2 +1,8 @@
-pub mod list_ops;
+pub mod helpers;
+pub mod list_sum;
+pub mod list_mean;
+pub mod list_min;
+pub mod list_max;
+pub mod list_diff;
+pub mod list_convolve;
 pub mod histogram;

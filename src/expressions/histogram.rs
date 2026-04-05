@@ -2,7 +2,7 @@
 use std::collections::HashMap;
 use polars::prelude::*;
 use pyo3_polars::derive::polars_expr;
-use super::list_ops::ensure_list_type;
+use super::helpers::ensure_list_type;
 
 // --- Histogram ---
 
