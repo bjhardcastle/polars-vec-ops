@@ -18,4 +18,5 @@ polars-arrow = { version = "0.51.0", default-features = false }
 panic = "abort"
 codegen-units = 4
 incremental = true
+strip = "debuginfo"
 
