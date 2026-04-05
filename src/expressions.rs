@@ -1105,10 +1105,16 @@ fn list_histogram(inputs: &[Series], kwargs: HistogramKwargs) -> PolarsResult<Se
                         polars_bail!(ComputeError: "bins must be positive, got 0");
                     }
                     Some(n) => {
-                        // Collect all finite values into the reusable cache — single Polars pass.
-                        // Then do 2 cheap Vec passes (min/max + count) instead of 2 Polars passes.
+                        // Collect finite values into the reusable cache.
+                        // Fast path: null-free single-chunk row → use cont_slice() for a direct
+                        // &[f64] slice, avoiding the per-element Option<f64> wrapping overhead of
+                        // the ChunkedArray iterator across 100M elements in the full benchmark.
                         values_cache.clear();
-                        values_cache.extend(finite_values_iter(ca));
+                        let cont = if ca.null_count() == 0 { ca.cont_slice().ok() } else { None };
+                        match cont {
+                            Some(slice) => values_cache.extend(slice.iter().copied().filter(|v| v.is_finite())),
+                            None => values_cache.extend(finite_values_iter(ca)),
+                        }
                         if values_cache.is_empty() {
                             push_null_row!();
                             continue;
