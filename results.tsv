@@ -21,3 +21,4 @@ d0a5170	5000000	20.7	307.1	19.8	1.306	discard	two-pass direct scatter-add: skip 
 45e8c7e	5000000	20.6	264.7	19.8	1.291	keep	target-cpu=native: recompile all 22 crates with AVX-512 and native instruction set — Polars internals + scatter-add benefit from wider SIMD; 14% wall time reduction
 700147c	5000000	22.0	279.0	19.8	1.309	discard	codegen-units=1 + lto=thin: wall_time regressed 5% — LTO likely interferes with LLVM's scatter-add vectorization or inlining decisions
 29ec2b8	5000000	20.6	517.3	19.8	1.376	discard	physical-cores-only (8 threads vs 16): +95% wall time regression — HT pairs help hide latency in scatter-add, 16 threads needed for full throughput
+59074ef	5000000	22.0	216.2	19.8	1.288	keep	baseline re-run on new host (mold removed, target-cpu=native retained)
