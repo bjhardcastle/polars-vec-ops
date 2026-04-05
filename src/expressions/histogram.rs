@@ -378,31 +378,33 @@ fn bins_int_parallel_flat(
                             }
                         };
 
-                        // Two-pass: separate filter+copy from min/max, each pass
-                        // is a simple LLVM-vectorizable loop (no multi-accumulator branches).
-                        // Pass 1 (filter+copy): uses AVX-512 compress to pack finite values.
-                        // Pass 2 (min/max): simple reduction on cached slice.
+                        // Fused filter+copy+min/max in one pass: avoids a second scan of
+                        // values_cache (previously: extend loop + separate min/max loop).
                         values_cache.clear();
+                        let mut min_val = f64::INFINITY;
+                        let mut max_val = f64::NEG_INFINITY;
                         let cont = if ca.null_count() == 0 { ca.cont_slice().ok() } else { None };
                         match cont {
                             Some(slice) => {
-                                values_cache.extend(slice.iter().copied().filter(|v| v.is_finite()));
+                                for &v in slice {
+                                    if v.is_finite() {
+                                        if v < min_val { min_val = v; }
+                                        if v > max_val { max_val = v; }
+                                        values_cache.push(v);
+                                    }
+                                }
                             },
                             None => {
-                                values_cache.extend(finite_values_iter(ca));
+                                for v in finite_values_iter(ca) {
+                                    if v < min_val { min_val = v; }
+                                    if v > max_val { max_val = v; }
+                                    values_cache.push(v);
+                                }
                             }
                         }
-                        let (min_val, max_val) = if values_cache.is_empty() {
-                            (f64::INFINITY, f64::NEG_INFINITY)
-                        } else {
-                            values_cache.iter().fold(
-                                (values_cache[0], values_cache[0]),
-                                |(mn, mx), &v| (mn.min(v), mx.max(v)),
-                            )
-                        };
 
                         if values_cache.is_empty() {
-                            // flat_counts is pre-zeroed; no fill needed
+                            out_slice.fill(0);
                             continue;
                         }
                         let (first, last) = if min_val == max_val {
