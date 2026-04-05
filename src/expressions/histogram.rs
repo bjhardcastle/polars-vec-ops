@@ -304,15 +304,17 @@ fn finite_values_iter(ca: &Float64Chunked) -> impl Iterator<Item = f64> + '_ {
 /// Pre-allocates ONE contiguous Vec<u32> (n_rows × n_bins) and splits it into
 /// non-overlapping thread-local slices via std::thread::scope. Avoids the 2×
 /// memory peak of the previous parallel attempt (which kept separate builders).
-/// Each thread runs the same cont_slice → min/max → 4-buffer scatter-add logic
-/// as the sequential path.
+///
+/// Fast path: if the ListChunked is a single chunk with Float64 values and no
+/// value-level nulls, threads receive direct `&[f64]` slices via Arrow offsets+values
+/// buffers — avoiding 100K × (get_as_series + cast + f64) overhead per row.
 fn bins_int_parallel_flat(
     list_chunked: &ListChunked,
     name: PlSmallStr,
     n_rows: usize,
     n_bins: usize,
 ) -> PolarsResult<Series> {
-    use polars_arrow::array::{ListArray, PrimitiveArray};
+    use polars_arrow::array::{Array, ListArray, PrimitiveArray};
     use polars_arrow::buffer::Buffer;
     use polars_arrow::datatypes::{ArrowDataType, Field as ArrowField};
     use polars_arrow::offset::OffsetsBuffer;
@@ -320,6 +322,23 @@ fn bins_int_parallel_flat(
     if n_bins == 0 {
         polars_bail!(ComputeError: "bins must be positive, got 0");
     }
+
+    // Try to get direct flat buffer access — avoids 100K × (get_as_series + cast + f64) calls.
+    // Valid only if: single chunk, inner values are Float64, no value-level nulls.
+    let direct_data: Option<(&[i64], &[f64])> = 'direct: {
+        if list_chunked.chunks().len() != 1 { break 'direct None; }
+        let chunk = &*list_chunked.chunks()[0];
+        let list_arr = match chunk.as_any().downcast_ref::<ListArray<i64>>() {
+            Some(a) => a,
+            None => break 'direct None,
+        };
+        let prim = match list_arr.values().as_any().downcast_ref::<PrimitiveArray<f64>>() {
+            Some(p) => p,
+            None => break 'direct None,
+        };
+        if prim.null_count() != 0 { break 'direct None; }
+        Some((&list_arr.offsets()[..], prim.values().as_slice()))
+    };
 
     // Single flat output buffer — no per-thread duplication
     let mut flat_counts = vec![0u32; n_rows * n_bins];
@@ -355,50 +374,63 @@ fn bins_int_parallel_flat(
                         let out_offset = (i - start_row) * n_bins;
                         let out_slice = &mut output_chunk[out_offset..out_offset + n_bins];
 
-                        let row_series = match list_chunked.get_as_series(i) {
-                            None => { out_slice.fill(0); continue; }
-                            Some(s) => s,
-                        };
-
-                        let row_f64 = match row_series.cast(&DataType::Float64) {
-                            Ok(s) => s,
-                            Err(e) => {
-                                let mut g = err_ref.lock().unwrap();
-                                if g.is_none() { *g = Some(e); }
-                                return;
-                            }
-                        };
-
-                        let ca = match row_f64.f64() {
-                            Ok(ca) => ca,
-                            Err(e) => {
-                                let mut g = err_ref.lock().unwrap();
-                                if g.is_none() { *g = Some(e.into()); }
-                                return;
-                            }
-                        };
-
-                        // Fused filter+copy+min/max in one pass: avoids a second scan of
-                        // values_cache (previously: extend loop + separate min/max loop).
+                        // Fused filter+copy+min/max in one pass
                         values_cache.clear();
                         let mut min_val = f64::INFINITY;
                         let mut max_val = f64::NEG_INFINITY;
-                        let cont = if ca.null_count() == 0 { ca.cont_slice().ok() } else { None };
-                        match cont {
-                            Some(slice) => {
-                                for &v in slice {
-                                    if v.is_finite() {
+
+                        if let Some((offsets, values_flat)) = direct_data {
+                            // Direct Arrow buffer path: zero-copy slice into flat values buffer.
+                            // Avoids get_as_series + cast + f64() overhead entirely.
+                            let start = offsets[i] as usize;
+                            let end = offsets[i + 1] as usize;
+                            let slice = &values_flat[start..end];
+                            for &v in slice {
+                                if v.is_finite() {
+                                    if v < min_val { min_val = v; }
+                                    if v > max_val { max_val = v; }
+                                    values_cache.push(v);
+                                }
+                            }
+                        } else {
+                            // Fallback: Polars API path (handles multi-chunk, non-f64, nullable values)
+                            let row_series = match list_chunked.get_as_series(i) {
+                                None => { out_slice.fill(0); continue; }
+                                Some(s) => s,
+                            };
+                            let row_f64 = match row_series.cast(&DataType::Float64) {
+                                Ok(s) => s,
+                                Err(e) => {
+                                    let mut g = err_ref.lock().unwrap();
+                                    if g.is_none() { *g = Some(e); }
+                                    return;
+                                }
+                            };
+                            let ca = match row_f64.f64() {
+                                Ok(ca) => ca,
+                                Err(e) => {
+                                    let mut g = err_ref.lock().unwrap();
+                                    if g.is_none() { *g = Some(e.into()); }
+                                    return;
+                                }
+                            };
+                            let cont = if ca.null_count() == 0 { ca.cont_slice().ok() } else { None };
+                            match cont {
+                                Some(slice) => {
+                                    for &v in slice {
+                                        if v.is_finite() {
+                                            if v < min_val { min_val = v; }
+                                            if v > max_val { max_val = v; }
+                                            values_cache.push(v);
+                                        }
+                                    }
+                                },
+                                None => {
+                                    for v in finite_values_iter(ca) {
                                         if v < min_val { min_val = v; }
                                         if v > max_val { max_val = v; }
                                         values_cache.push(v);
                                     }
-                                }
-                            },
-                            None => {
-                                for v in finite_values_iter(ca) {
-                                    if v < min_val { min_val = v; }
-                                    if v > max_val { max_val = v; }
-                                    values_cache.push(v);
                                 }
                             }
                         }
