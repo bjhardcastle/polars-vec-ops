@@ -1,2 +1,19 @@
 commit	output_elements	peak_memory_mb	wall_time_ms	output_size_mb	fitness	status	description
 23ac576	5000000	102.0	2978.5	19.8	3.000	keep	baseline
+eabcea8	5000000	101.4	2238.2	19.8	2.745	keep	scratch buffer reuse in count_into_bins (avoid 100K per-row Vec allocs)
+b1df467	5000000	101.8	1482.7	19.8	2.496	keep	O(1) uniform bin assignment replaces O(log n) binary search for bins_int/range modes
+603c334	5000000	101.3	1350.4	19.8	2.446	keep	skip edges Vec alloc for bins_int (100K heap allocs eliminated)
+098fffe	5000000	20.8	1206.3	19.8	1.609	keep	ListPrimitiveChunkedBuilder flat buffer: eliminates 100K Series allocs, single pre-allocated output buffer
+f43b893	5000000	32.0	1180.9	10.3	1.711	discard	UInt16 output dtype: polars 0.51 ListPrimitiveChunkedBuilder<UInt16Type> panics; Python cast adds 20+10MB peak
+d28c28f	5000000	20.9	1159.8	19.8	1.594	keep	cache finite values in Vec: 1 Polars pass + 2 Vec passes vs 2 Polars passes in bins_int
+1ce857b	5000000	20.9	1162.0	19.8	1.594	discard	direct Arrow slice access in bins_int fast path (get_as_series not bottleneck; scatter-add is)
+d27ac4d	5000000	20.7	1007.8	19.8	1.541	keep	4-buffer scatter-add in bins_int: 4 independent accumulator arrays break load-store dependency chain, 13% wall time reduction
+23719b9	5000000	20.8	1007.0	19.8	discard	discard	unsafe get_unchecked_mut in scatter-add (no gain: LLVM already elides bounds checks in release)
+9d79545	5000000	39.3	495.5	19.8	1.552	discard	parallel std::thread::scope for bins_int: 51% wall time improvement but flat buffer + builder coexist (2x memory peak); fitness 1.552 > best 1.541
+af231ce	5000000	20.7	685.4	19.8	1.433	keep	cont_slice() fast path for null-free rows: avoids Option<f64> per-element overhead in ChunkedArray iter, 32% wall time reduction
+d866c26	5000000	20.9	679.7	19.8	discard	discard	skip values_cache copy for all-finite rows (combined finiteness+min/max in 1 pass, count from slice): no significant gain — bandwidth saving offset by extra slice scans
+bbb50c7	5000000	20.5	996.1	19.8	3.443	discard	8-buffer scatter-add: 8 independent accumulators regressed 45% vs 4-buffer (larger working set degrades cache/ILP balance)
+edb93cd	5000000	20.7	310.2	19.8	1.307	keep	parallel bins_int flat-buffer: 16 threads via std::thread::scope with single pre-allocated output Vec<u32> (no per-thread builders → no memory duplication); 55% wall time reduction, memory unchanged
+4f2b3d5	5000000	20.7	311.0	19.8	1.307	discard	direct Arrow buffer access in parallel bins_int: bypass get_as_series/cast/cont_slice per row + combined filter+min/max pass; no gain — per-row API overhead negligible vs scatter-add computation
+ed8a0a9	5000000	0.0	0.0	0.0	0.000	crash	UInt16 output via direct Arrow PrimitiveArray: polars 0.51 not-implemented panic in LargeList<UInt16> expression evaluation path
+8c7589c	5000000	20.3	307.8	19.8	1.302	keep	fuse filter+copy+min/max into single loop in parallel bins_int fast path: eliminates second scan of values_cache, -0.4% fitness
