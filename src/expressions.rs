@@ -851,6 +851,36 @@ fn count_into_bins_uniform(values: impl Iterator<Item = f64>, edges: &[f64], scr
     }
 }
 
+/// Count values into uniformly-spaced bins without requiring a pre-built edges Vec.
+/// Takes first/last edge and n_bins directly — avoids heap allocation for edges.
+/// Semantics identical to count_into_bins_uniform.
+fn count_into_bins_uniform_direct(
+    values: impl Iterator<Item = f64>,
+    n_bins: usize,
+    first: f64,
+    last: f64,
+    scratch: &mut Vec<u32>,
+) {
+    scratch.clear();
+    scratch.resize(n_bins, 0);
+    if n_bins == 0 {
+        return;
+    }
+    let range = last - first;
+    if range <= 0.0 {
+        return;
+    }
+    let inv_step = n_bins as f64 / range;
+    for v in values {
+        if v < first || v > last || !v.is_finite() {
+            continue;
+        }
+        let bin = ((v - first) * inv_step) as usize;
+        let bin = bin.min(n_bins - 1);
+        scratch[bin] += 1;
+    }
+}
+
 /// Validate that the number of bins doesn't exceed the safety limit.
 fn validate_bin_count(_edges: &[f64]) -> PolarsResult<()> {
     Ok(())
@@ -973,9 +1003,26 @@ fn list_histogram(inputs: &[Series], kwargs: HistogramKwargs) -> PolarsResult<Se
                             push_null_row!();
                             continue;
                         }
-                        let edges = edges_from_bins_int(n, min_val, max_val);
-                        validate_bin_count(&edges)?;
-                        edges
+                        // bins_int always produces uniform bins — count directly without
+                        // allocating an edges Vec (eliminates one heap allocation per row).
+                        let (first, last) = if min_val == max_val {
+                            (min_val - 0.5, min_val + 0.5)
+                        } else {
+                            (min_val, max_val)
+                        };
+                        count_into_bins_uniform_direct(
+                            finite_values_iter(ca),
+                            n as usize,
+                            first,
+                            last,
+                            &mut scratch,
+                        );
+                        if include_breakpoints {
+                            let edges = edges_from_bins_int(n, min_val, max_val);
+                            breakpoints_vec.push(Some(Series::new("".into(), &edges)));
+                        }
+                        counts_vec.push(Some(counts_to_series(&scratch)));
+                        continue;
                     }
                 }
             }
