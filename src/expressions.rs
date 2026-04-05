@@ -1105,56 +1105,15 @@ fn list_histogram(inputs: &[Series], kwargs: HistogramKwargs) -> PolarsResult<Se
                         polars_bail!(ComputeError: "bins must be positive, got 0");
                     }
                     Some(n) => {
+                        // Collect finite values into the reusable cache.
                         // Fast path: null-free single-chunk row → use cont_slice() for a direct
-                        // &[f64] slice, avoiding the per-element Option<f64> wrapping overhead.
+                        // &[f64] slice, avoiding the per-element Option<f64> wrapping overhead of
+                        // the ChunkedArray iterator across 100M elements in the full benchmark.
+                        values_cache.clear();
                         let cont = if ca.null_count() == 0 { ca.cont_slice().ok() } else { None };
                         match cont {
-                            Some(slice) if !slice.is_empty() => {
-                                // Super-fast path: combine finiteness check + min/max in a single
-                                // pass over the Arrow slice, then count directly from the slice —
-                                // avoiding the values_cache copy entirely.  For all-finite data
-                                // (the benchmark's uniform [0,10) distribution) this reduces
-                                // 4 memory operations (cold read → write cache, 2 warm reads)
-                                // to 2 reads with no write, saving ~33% inner-loop bandwidth.
-                                let mut min_val = slice[0];
-                                let mut max_val = slice[0];
-                                let mut all_finite = slice[0].is_finite();
-                                if all_finite {
-                                    for &v in &slice[1..] {
-                                        if !v.is_finite() { all_finite = false; break; }
-                                        if v < min_val { min_val = v; }
-                                        if v > max_val { max_val = v; }
-                                    }
-                                }
-                                if all_finite {
-                                    let (first, last) = if min_val == max_val {
-                                        (min_val - 0.5, min_val + 0.5)
-                                    } else {
-                                        (min_val, max_val)
-                                    };
-                                    count_into_bins_uniform_slice_4buf(
-                                        slice, n as usize, first, last,
-                                        &mut scratch, &mut scratch1, &mut scratch2, &mut scratch3,
-                                    );
-                                    if let Some(ref mut b) = bp_builder {
-                                        let edges = edges_from_bins_int(n, min_val, max_val);
-                                        b.append_slice(&edges);
-                                    }
-                                    counts_builder.append_slice(&scratch);
-                                    continue;
-                                }
-                                // Fallback: some non-finite values — copy filtered into cache
-                                values_cache.clear();
-                                values_cache.extend(slice.iter().copied().filter(|v| v.is_finite()));
-                            }
-                            Some(_empty) => {
-                                // Empty slice
-                                values_cache.clear();
-                            }
-                            None => {
-                                values_cache.clear();
-                                values_cache.extend(finite_values_iter(ca));
-                            }
+                            Some(slice) => values_cache.extend(slice.iter().copied().filter(|v| v.is_finite())),
+                            None => values_cache.extend(finite_values_iter(ca)),
                         }
                         if values_cache.is_empty() {
                             push_null_row!();
@@ -1171,6 +1130,8 @@ fn list_histogram(inputs: &[Series], kwargs: HistogramKwargs) -> PolarsResult<Se
                         } else {
                             (min_val, max_val)
                         };
+                        // Count from the cached Vec using 4 independent scatter buffers
+                        // to break the load-store dependency chain in the inner loop.
                         count_into_bins_uniform_slice_4buf(
                             &values_cache,
                             n as usize,
