@@ -1,6 +1,8 @@
+Generating test data...
+  100000 rows × 1000 spikes/row, df RSS ≈ 861 MB
 correctness_check: PASS
 ---
 output_elements: 5000000
-peak_memory_mb: 102.0
-wall_time_ms: 3815.5
+peak_memory_mb: 22.0
+wall_time_ms: 216.2
 output_size_mb: 19.8
