@@ -455,7 +455,9 @@ class VecOpsNamespace:
         )
 
         # Post-process: cast counts dtype and/or unwrap struct
-        # Rust emits UInt16 by default; cast only when an explicit non-u16 dtype is requested.
+        # Default output is UInt16 (halves memory vs UInt32; max 65535 per bin is sufficient).
+        # Explicit count_dtype overrides the default.
+        _default_dtype = pl.UInt16
         needs_cast = dtype_str is not None and dtype_str != "u16"
         cast_map = {"bool": pl.Boolean, "u8": pl.UInt8, "u32": pl.UInt32}
         target = cast_map.get(dtype_str or "") if needs_cast else None
@@ -473,11 +475,15 @@ class VecOpsNamespace:
                 _unwrap_and_cast, return_dtype=pl.List(target),
             )
         elif not include_breakpoints:
-            # Unwrap to just counts list (default u16)
-            def _unwrap(s: pl.Series) -> pl.Series:
-                return s.struct.field("counts").rename(s.name)
+            # Unwrap to just counts list and cast to UInt16 (halves memory vs UInt32)
+            def _unwrap_u16(s: pl.Series) -> pl.Series:
+                return (
+                    s.struct.field("counts")
+                    .list.eval(pl.element().cast(pl.UInt16))
+                    .rename(s.name)
+                )
             result = result.map_batches(
-                _unwrap, return_dtype=pl.List(pl.UInt16),
+                _unwrap_u16, return_dtype=pl.List(pl.UInt16),
             )
         elif target is not None:
             # Keep struct, cast counts dtype
