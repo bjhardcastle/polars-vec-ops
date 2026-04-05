@@ -1018,22 +1018,6 @@ fn bins_int_parallel_flat(
     // Use Mutex to collect errors from threads without adding a new crate
     let thread_error: std::sync::Mutex<Option<PolarsError>> = std::sync::Mutex::new(None);
 
-    // Pre-extract raw Arrow offsets + values for the common case: single chunk, Float64 inner
-    // type, no nulls anywhere. When available, threads bypass get_as_series()/cast()/cont_slice()
-    // per-row overhead and combine filter+min/max into one pass over the row data.
-    let direct_arrow: Option<(&[i64], &[f64])> = if list_chunked.chunks().len() == 1 {
-        let arr = &list_chunked.chunks()[0];
-        arr.as_any().downcast_ref::<ListArray<i64>>().and_then(|la| {
-            if la.null_count() != 0 { return None; }
-            la.values().as_any().downcast_ref::<PrimitiveArray<f64>>().and_then(|va| {
-                if va.null_count() != 0 { return None; }
-                Some((la.offsets().as_slice(), va.values().as_slice()))
-            })
-        })
-    } else {
-        None
-    };
-
     {
         let chunks: Vec<&mut [u32]> = flat_counts.chunks_mut(rows_per_thread * n_bins).collect();
 
@@ -1055,69 +1039,49 @@ fn bins_int_parallel_flat(
                         let out_offset = (i - start_row) * n_bins;
                         let out_slice = &mut output_chunk[out_offset..out_offset + n_bins];
 
-                        // Populate values_cache and compute (min, max) for this row.
-                        let (min_val, max_val) = if let Some((offsets, all_values)) = direct_arrow {
-                            // Direct Arrow fast path: index into raw buffers, no Series allocation.
-                            // Combines finite-filter + min/max into one pass (saves a 2nd scan).
-                            let row_start = offsets[i] as usize;
-                            let row_end = offsets[i + 1] as usize;
-                            let row_values = &all_values[row_start..row_end];
-                            values_cache.clear();
-                            let mut mn = f64::INFINITY;
-                            let mut mx = f64::NEG_INFINITY;
-                            for &v in row_values {
-                                if v.is_finite() {
-                                    if v < mn { mn = v; }
-                                    if v > mx { mx = v; }
-                                    values_cache.push(v);
-                                }
-                            }
-                            (mn, mx)
-                        } else {
-                            // Polars API fallback for multi-chunk / non-f64 / nullable arrays
-                            let row_series = match list_chunked.get_as_series(i) {
-                                None => { out_slice.fill(0); continue; }
-                                Some(s) => s,
-                            };
-                            let row_f64 = match row_series.cast(&DataType::Float64) {
-                                Ok(s) => s,
-                                Err(e) => {
-                                    let mut g = err_ref.lock().unwrap();
-                                    if g.is_none() { *g = Some(e); }
-                                    return;
-                                }
-                            };
-                            let ca = match row_f64.f64() {
-                                Ok(ca) => ca,
-                                Err(e) => {
-                                    let mut g = err_ref.lock().unwrap();
-                                    if g.is_none() { *g = Some(e.into()); }
-                                    return;
-                                }
-                            };
-                            values_cache.clear();
-                            let cont = if ca.null_count() == 0 { ca.cont_slice().ok() } else { None };
-                            match cont {
-                                Some(slice) => values_cache.extend(
-                                    slice.iter().copied().filter(|v| v.is_finite())
-                                ),
-                                None => values_cache.extend(finite_values_iter(ca)),
-                            }
-                            if values_cache.is_empty() { out_slice.fill(0); continue; }
-                            let mut mn = values_cache[0];
-                            let mut mx = values_cache[0];
-                            for &v in &values_cache[1..] {
-                                if v < mn { mn = v; }
-                                if v > mx { mx = v; }
-                            }
-                            (mn, mx)
+                        let row_series = match list_chunked.get_as_series(i) {
+                            None => { out_slice.fill(0); continue; }
+                            Some(s) => s,
                         };
+
+                        let row_f64 = match row_series.cast(&DataType::Float64) {
+                            Ok(s) => s,
+                            Err(e) => {
+                                let mut g = err_ref.lock().unwrap();
+                                if g.is_none() { *g = Some(e); }
+                                return;
+                            }
+                        };
+
+                        let ca = match row_f64.f64() {
+                            Ok(ca) => ca,
+                            Err(e) => {
+                                let mut g = err_ref.lock().unwrap();
+                                if g.is_none() { *g = Some(e.into()); }
+                                return;
+                            }
+                        };
+
+                        values_cache.clear();
+                        let cont = if ca.null_count() == 0 { ca.cont_slice().ok() } else { None };
+                        match cont {
+                            Some(slice) => values_cache.extend(
+                                slice.iter().copied().filter(|v| v.is_finite())
+                            ),
+                            None => values_cache.extend(finite_values_iter(ca)),
+                        }
 
                         if values_cache.is_empty() {
                             out_slice.fill(0);
                             continue;
                         }
 
+                        let mut min_val = values_cache[0];
+                        let mut max_val = values_cache[0];
+                        for &v in &values_cache[1..] {
+                            if v < min_val { min_val = v; }
+                            if v > max_val { max_val = v; }
+                        }
                         let (first, last) = if min_val == max_val {
                             (min_val - 0.5, min_val + 0.5)
                         } else {
@@ -1149,7 +1113,7 @@ fn bins_int_parallel_flat(
         OffsetsBuffer::<i64>::new_unchecked(Buffer::<i64>::from(offsets_vec))
     };
 
-    let inner_field = ArrowField::new("item".into(), ArrowDataType::UInt32, true);
+    let inner_field = ArrowField::new("item", ArrowDataType::UInt32, true);
     let list_dtype = ArrowDataType::LargeList(Box::new(inner_field));
     let list_arr = ListArray::<i64>::new(list_dtype, offsets, Box::new(values_arr), None);
 
