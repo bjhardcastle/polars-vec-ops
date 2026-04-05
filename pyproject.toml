@@ -24,6 +24,7 @@ Issues = "https://github.com/bjhardcastle/polars-vec-ops/issues"
 dev = [
     "maturin>=1.0,<2.0",
     "numpy>=2.0.2",
+    "pyarrow>=21.0.0",
     "pytest>=8.4.2",
     "typing_extensions; python_version<'3.10'",
 ]
