@@ -793,15 +793,17 @@ fn edges_from_bins_int(n_bins: u32, min_val: f64, max_val: f64) -> Vec<f64> {
     edges
 }
 
-/// Count values into bins defined by edges.
+/// Count values into bins defined by edges, reusing a caller-supplied scratch buffer.
+/// The scratch buffer is resized to n_bins and zeroed before use; caller retains the allocation.
 /// Bins are half-open: [edge_i, edge_{i+1}) except last bin [edge_{n-1}, edge_n].
 /// Values outside [edges[0], edges[last]] are excluded.
-/// Accepts an iterator to avoid allocating a temporary Vec of values.
-fn count_into_bins(values: impl Iterator<Item = f64>, edges: &[f64]) -> Vec<u32> {
+fn count_into_bins_scratch(values: impl Iterator<Item = f64>, edges: &[f64], scratch: &mut Vec<u32>) {
     let n_bins = edges.len() - 1;
-    let mut counts = vec![0u32; n_bins];
+    // Reuse the allocation: resize and zero without re-allocating if capacity suffices
+    scratch.clear();
+    scratch.resize(n_bins, 0);
     if n_bins == 0 {
-        return counts;
+        return;
     }
     let first = edges[0];
     let last = edges[n_bins];
@@ -809,24 +811,17 @@ fn count_into_bins(values: impl Iterator<Item = f64>, edges: &[f64]) -> Vec<u32>
         if v < first || v > last || !v.is_finite() {
             continue;
         }
-        // Binary search: find rightmost edge <= v
-        // partition_point returns the first index where edge > v
         let idx = edges.partition_point(|&e| e <= v);
-        // idx is the first edge > v, so the bin is idx - 1
-        // But we need to handle the boundaries:
         if idx == 0 {
-            // v < edges[0], already excluded above
             continue;
         }
         let bin = idx - 1;
         if bin >= n_bins {
-            // v == edges[last], put in last bin
-            counts[n_bins - 1] += 1;
+            scratch[n_bins - 1] += 1;
         } else {
-            counts[bin] += 1;
+            scratch[bin] += 1;
         }
     }
-    counts
 }
 
 /// Validate that the number of bins doesn't exceed the safety limit.
@@ -879,6 +874,8 @@ fn list_histogram(inputs: &[Series], kwargs: HistogramKwargs) -> PolarsResult<Se
         Vec::new()  // won't be used
     };
     let mut counts_vec: Vec<Option<Series>> = Vec::with_capacity(n_rows);
+    // Single scratch buffer reused across all rows to avoid N heap allocations
+    let mut scratch: Vec<u32> = Vec::new();
 
     // For "edges" mode, resolve edges once (they're the same for every row)
     let static_edges: Option<Vec<f64>> = if mode == "edges" {
@@ -993,8 +990,9 @@ fn list_histogram(inputs: &[Series], kwargs: HistogramKwargs) -> PolarsResult<Se
             }
         };
 
-        // Count into bins using iterator (avoids collecting all values)
-        let bin_counts = count_into_bins(finite_values_iter(ca), &edges);
+        // Count into bins, reusing scratch buffer to avoid per-row allocations
+        count_into_bins_scratch(finite_values_iter(ca), &edges, &mut scratch);
+        let bin_counts = &scratch;
 
         if include_breakpoints {
             breakpoints_vec.push(Some(Series::new("".into(), &edges)));
