@@ -983,6 +983,154 @@ fn finite_values_iter(ca: &Float64Chunked) -> impl Iterator<Item = f64> + '_ {
         .filter_map(|opt| opt.filter(|v| v.is_finite()))
 }
 
+/// Parallel flat-buffer fast path for `bins_int` with constant n_bins and no null rows.
+///
+/// Pre-allocates ONE contiguous Vec<u32> (n_rows × n_bins) and splits it into
+/// non-overlapping thread-local slices via std::thread::scope. Avoids the 2×
+/// memory peak of the previous parallel attempt (which kept separate builders).
+/// Each thread runs the same cont_slice → min/max → 4-buffer scatter-add logic
+/// as the sequential path.
+fn bins_int_parallel_flat(
+    list_chunked: &ListChunked,
+    name: PlSmallStr,
+    n_rows: usize,
+    n_bins: usize,
+) -> PolarsResult<Series> {
+    use polars_arrow::array::{ListArray, PrimitiveArray};
+    use polars_arrow::buffer::Buffer;
+    use polars_arrow::datatypes::{ArrowDataType, Field as ArrowField};
+    use polars_arrow::offset::OffsetsBuffer;
+
+    if n_bins == 0 {
+        polars_bail!(ComputeError: "bins must be positive, got 0");
+    }
+
+    // Single flat output buffer — no per-thread duplication
+    let mut flat_counts = vec![0u32; n_rows * n_bins];
+
+    let n_threads = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4)
+        .min(n_rows);
+
+    let rows_per_thread = (n_rows + n_threads - 1) / n_threads;
+
+    // Use Mutex to collect errors from threads without adding a new crate
+    let thread_error: std::sync::Mutex<Option<PolarsError>> = std::sync::Mutex::new(None);
+
+    {
+        let chunks: Vec<&mut [u32]> = flat_counts.chunks_mut(rows_per_thread * n_bins).collect();
+
+        std::thread::scope(|scope| {
+            for (thread_idx, output_chunk) in chunks.into_iter().enumerate() {
+                let start_row = thread_idx * rows_per_thread;
+                let end_row = (start_row + rows_per_thread).min(n_rows);
+                let err_ref = &thread_error;
+
+                scope.spawn(move || {
+                    // Per-thread scratch buffers (4-buffer scatter-add)
+                    let mut s0 = vec![0u32; n_bins];
+                    let mut s1 = vec![0u32; n_bins];
+                    let mut s2 = vec![0u32; n_bins];
+                    let mut s3 = vec![0u32; n_bins];
+                    let mut values_cache = Vec::<f64>::with_capacity(1024);
+
+                    for i in start_row..end_row {
+                        let out_offset = (i - start_row) * n_bins;
+                        let out_slice = &mut output_chunk[out_offset..out_offset + n_bins];
+
+                        let row_series = match list_chunked.get_as_series(i) {
+                            None => { out_slice.fill(0); continue; }
+                            Some(s) => s,
+                        };
+
+                        let row_f64 = match row_series.cast(&DataType::Float64) {
+                            Ok(s) => s,
+                            Err(e) => {
+                                let mut g = err_ref.lock().unwrap();
+                                if g.is_none() { *g = Some(e); }
+                                return;
+                            }
+                        };
+
+                        let ca = match row_f64.f64() {
+                            Ok(ca) => ca,
+                            Err(e) => {
+                                let mut g = err_ref.lock().unwrap();
+                                if g.is_none() { *g = Some(e.into()); }
+                                return;
+                            }
+                        };
+
+                        values_cache.clear();
+                        let cont = if ca.null_count() == 0 { ca.cont_slice().ok() } else { None };
+                        match cont {
+                            Some(slice) => values_cache.extend(
+                                slice.iter().copied().filter(|v| v.is_finite())
+                            ),
+                            None => values_cache.extend(finite_values_iter(ca)),
+                        }
+
+                        if values_cache.is_empty() {
+                            out_slice.fill(0);
+                            continue;
+                        }
+
+                        let mut min_val = values_cache[0];
+                        let mut max_val = values_cache[0];
+                        for &v in &values_cache[1..] {
+                            if v < min_val { min_val = v; }
+                            if v > max_val { max_val = v; }
+                        }
+                        let (first, last) = if min_val == max_val {
+                            (min_val - 0.5, min_val + 0.5)
+                        } else {
+                            (min_val, max_val)
+                        };
+
+                        count_into_bins_uniform_slice_4buf(
+                            &values_cache, n_bins, first, last,
+                            &mut s0, &mut s1, &mut s2, &mut s3,
+                        );
+
+                        out_slice.copy_from_slice(&s0);
+                    }
+                });
+            }
+        });
+    }
+
+    // Propagate any thread error
+    if let Some(e) = thread_error.into_inner().unwrap() {
+        return Err(e);
+    }
+
+    // Build LargeListArray directly from flat buffer — O(n_rows) offset construction
+    let values_arr = PrimitiveArray::<u32>::from_vec(flat_counts);
+
+    let offsets_vec: Vec<i64> = (0..=(n_rows as i64)).map(|i| i * n_bins as i64).collect();
+    let offsets = unsafe {
+        OffsetsBuffer::<i64>::new_unchecked(Buffer::<i64>::from(offsets_vec))
+    };
+
+    let inner_field = ArrowField::new("item", ArrowDataType::UInt32, true);
+    let list_dtype = ArrowDataType::LargeList(Box::new(inner_field));
+    let list_arr = ListArray::<i64>::new(list_dtype, offsets, Box::new(values_arr), None);
+
+    let counts_ca = ListChunked::with_chunk("counts".into(), list_arr);
+    let counts_series = counts_ca.into_series();
+
+    let breakpoints_series = Series::new_null("breakpoints".into(), n_rows);
+
+    let out = StructChunked::from_series(
+        name,
+        n_rows,
+        [breakpoints_series, counts_series].iter(),
+    )?;
+
+    Ok(out.into_series())
+}
+
 #[polars_expr(output_type_func=histogram_output_type)]
 fn list_histogram(inputs: &[Series], kwargs: HistogramKwargs) -> PolarsResult<Series> {
     let series = &inputs[0];
@@ -1008,6 +1156,19 @@ fn list_histogram(inputs: &[Series], kwargs: HistogramKwargs) -> PolarsResult<Se
     }
 
     let mode = kwargs.mode.as_str();
+
+    // Parallel fast path: bins_int with constant n_bins, no breakpoints, no null rows.
+    // Uses a single pre-allocated flat Vec<u32> split across threads — avoids the 2×
+    // memory peak of the previous parallel attempt that used per-thread builders.
+    if mode == "bins_int"
+        && !include_breakpoints
+        && kwargs.bins_int.is_some()
+        && kwargs.arg_positions.get("bins_int").is_none()
+        && list_chunked.null_count() == 0
+    {
+        let n_bins = kwargs.bins_int.unwrap() as usize;
+        return bins_int_parallel_flat(list_chunked, series.name().clone(), n_rows, n_bins);
+    }
     // "bins_int" and "range" always produce uniformly-spaced edges — use O(1) bin assignment.
     let use_uniform_bins = mode == "bins_int" || mode == "range";
 
