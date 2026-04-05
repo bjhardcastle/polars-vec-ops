@@ -1122,7 +1122,7 @@ fn bins_int_parallel_flat(
         OffsetsBuffer::<i64>::new_unchecked(Buffer::<i64>::from(offsets_vec))
     };
 
-    let inner_field = ArrowField::new("item", ArrowDataType::UInt32, true);
+    let inner_field = ArrowField::new("item".into(), ArrowDataType::UInt32, true);
     let list_dtype = ArrowDataType::LargeList(Box::new(inner_field));
     let list_arr = ListArray::<i64>::new(list_dtype, offsets, Box::new(values_arr), None);
 
