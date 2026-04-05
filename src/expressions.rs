@@ -824,6 +824,33 @@ fn count_into_bins_scratch(values: impl Iterator<Item = f64>, edges: &[f64], scr
     }
 }
 
+/// Count values into uniformly-spaced bins using O(1) direct index computation.
+/// Avoids binary search for modes that always produce uniform edges ("bins_int", "range").
+/// Bins are half-open: [edge_i, edge_{i+1}) except last bin which is closed: [edge_{n-1}, edge_n].
+fn count_into_bins_uniform(values: impl Iterator<Item = f64>, edges: &[f64], scratch: &mut Vec<u32>) {
+    let n_bins = edges.len() - 1;
+    scratch.clear();
+    scratch.resize(n_bins, 0);
+    if n_bins == 0 {
+        return;
+    }
+    let first = edges[0];
+    let last = edges[n_bins];
+    let range = last - first;
+    if range <= 0.0 {
+        return;
+    }
+    let inv_step = n_bins as f64 / range;
+    for v in values {
+        if v < first || v > last || !v.is_finite() {
+            continue;
+        }
+        let bin = ((v - first) * inv_step) as usize;
+        let bin = bin.min(n_bins - 1);
+        scratch[bin] += 1;
+    }
+}
+
 /// Validate that the number of bins doesn't exceed the safety limit.
 fn validate_bin_count(_edges: &[f64]) -> PolarsResult<()> {
     Ok(())
@@ -867,6 +894,8 @@ fn list_histogram(inputs: &[Series], kwargs: HistogramKwargs) -> PolarsResult<Se
     }
 
     let mode = kwargs.mode.as_str();
+    // "bins_int" and "range" always produce uniformly-spaced edges — use O(1) bin assignment.
+    let use_uniform_bins = mode == "bins_int" || mode == "range";
 
     let mut breakpoints_vec: Vec<Option<Series>> = if include_breakpoints {
         Vec::with_capacity(n_rows)
@@ -990,8 +1019,13 @@ fn list_histogram(inputs: &[Series], kwargs: HistogramKwargs) -> PolarsResult<Se
             }
         };
 
-        // Count into bins, reusing scratch buffer to avoid per-row allocations
-        count_into_bins_scratch(finite_values_iter(ca), &edges, &mut scratch);
+        // Count into bins, reusing scratch buffer to avoid per-row allocations.
+        // Use O(1) direct index for uniform bins, O(log n) binary search for arbitrary edges.
+        if use_uniform_bins {
+            count_into_bins_uniform(finite_values_iter(ca), &edges, &mut scratch);
+        } else {
+            count_into_bins_scratch(finite_values_iter(ca), &edges, &mut scratch);
+        }
         let bin_counts = &scratch;
 
         if include_breakpoints {
