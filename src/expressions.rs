@@ -881,6 +881,33 @@ fn count_into_bins_uniform_direct(
     }
 }
 
+/// Count values from a pre-collected slice into uniformly-spaced bins.
+/// Values are already finite (caller filters); no further filtering needed.
+/// This variant avoids a second Polars ChunkedArray pass by operating on a cached Vec<f64>.
+fn count_into_bins_uniform_slice(
+    values: &[f64],
+    n_bins: usize,
+    first: f64,
+    last: f64,
+    scratch: &mut Vec<u32>,
+) {
+    scratch.clear();
+    scratch.resize(n_bins, 0);
+    if n_bins == 0 || values.is_empty() {
+        return;
+    }
+    let range = last - first;
+    if range <= 0.0 {
+        return;
+    }
+    let inv_step = n_bins as f64 / range;
+    for &v in values {
+        let bin = ((v - first) * inv_step) as usize;
+        let bin = bin.min(n_bins - 1);
+        scratch[bin] += 1;
+    }
+}
+
 /// Validate that the number of bins doesn't exceed the safety limit.
 fn validate_bin_count(_edges: &[f64]) -> PolarsResult<()> {
     Ok(())
@@ -929,6 +956,9 @@ fn list_histogram(inputs: &[Series], kwargs: HistogramKwargs) -> PolarsResult<Se
 
     // Single scratch buffer reused across all rows to avoid N heap allocations
     let mut scratch: Vec<u32> = Vec::new();
+    // Values cache reused across rows — avoids a second Polars ChunkedArray pass in bins_int mode.
+    // Pre-sized to a typical row length to avoid reallocation after the first few rows.
+    let mut values_cache: Vec<f64> = Vec::with_capacity(1024);
 
     // For "edges" mode, resolve edges once (they're the same for every row)
     let static_edges: Option<Vec<f64>> = if mode == "edges" {
@@ -1012,28 +1042,28 @@ fn list_histogram(inputs: &[Series], kwargs: HistogramKwargs) -> PolarsResult<Se
                         polars_bail!(ComputeError: "bins must be positive, got 0");
                     }
                     Some(n) => {
-                        // bins_int needs min/max, so we must scan values first
-                        let mut min_val = f64::INFINITY;
-                        let mut max_val = f64::NEG_INFINITY;
-                        let mut has_values = false;
-                        for v in finite_values_iter(ca) {
-                            if v < min_val { min_val = v; }
-                            if v > max_val { max_val = v; }
-                            has_values = true;
-                        }
-                        if !has_values {
+                        // Collect all finite values into the reusable cache — single Polars pass.
+                        // Then do 2 cheap Vec passes (min/max + count) instead of 2 Polars passes.
+                        values_cache.clear();
+                        values_cache.extend(finite_values_iter(ca));
+                        if values_cache.is_empty() {
                             push_null_row!();
                             continue;
                         }
-                        // bins_int always produces uniform bins — count directly without
-                        // allocating an edges Vec (eliminates one heap allocation per row).
+                        let mut min_val = values_cache[0];
+                        let mut max_val = values_cache[0];
+                        for &v in &values_cache[1..] {
+                            if v < min_val { min_val = v; }
+                            if v > max_val { max_val = v; }
+                        }
                         let (first, last) = if min_val == max_val {
                             (min_val - 0.5, min_val + 0.5)
                         } else {
                             (min_val, max_val)
                         };
-                        count_into_bins_uniform_direct(
-                            finite_values_iter(ca),
+                        // Count from the cached Vec — values are already finite, no filtering needed.
+                        count_into_bins_uniform_slice(
+                            &values_cache,
                             n as usize,
                             first,
                             last,
