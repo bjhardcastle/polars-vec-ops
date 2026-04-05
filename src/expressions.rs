@@ -908,17 +908,15 @@ fn count_into_bins_uniform_slice(
     }
 }
 
-/// Count values into uniformly-spaced bins using 8 independent scatter buffers.
-/// Extends the 4-buffer approach: 8 independent accumulators let the CPU pipeline
-/// 8 bin computations simultaneously, doubling the instruction-level parallelism
-/// for the scatter-add bottleneck.  Each buffer covers 50 bins × 4 bytes = 200 bytes;
-/// all 8 fit in L1 cache together (1.6 KB).
-/// Result is accumulated into s0 at the end.  s1..s7 are pre-allocated scratch reused
+/// Count values into uniformly-spaced bins using 4 independent scatter buffers.
+/// Breaks the load-store dependency chain in the inner loop: the 4 bin index computations
+/// are independent (CPU can pipeline them), and the 4 stores go to different arrays
+/// (no RAW hazards between s0/s1/s2/s3 even when they hit the same bin index).
+/// Result is accumulated into s0 at the end.  s1/s2/s3 are pre-allocated scratch reused
 /// across rows to avoid per-row allocation overhead.
 ///
-/// Caller must ensure all 8 buffers have capacity >= n_bins (they are resized here).
-#[allow(clippy::too_many_arguments)]
-fn count_into_bins_uniform_slice_8buf(
+/// Caller must ensure s0/s1/s2/s3 all have capacity >= n_bins (they are resized here).
+fn count_into_bins_uniform_slice_4buf(
     values: &[f64],
     n_bins: usize,
     first: f64,
@@ -927,19 +925,11 @@ fn count_into_bins_uniform_slice_8buf(
     s1: &mut Vec<u32>,
     s2: &mut Vec<u32>,
     s3: &mut Vec<u32>,
-    s4: &mut Vec<u32>,
-    s5: &mut Vec<u32>,
-    s6: &mut Vec<u32>,
-    s7: &mut Vec<u32>,
 ) {
     s0.clear(); s0.resize(n_bins, 0);
     s1.clear(); s1.resize(n_bins, 0);
     s2.clear(); s2.resize(n_bins, 0);
     s3.clear(); s3.resize(n_bins, 0);
-    s4.clear(); s4.resize(n_bins, 0);
-    s5.clear(); s5.resize(n_bins, 0);
-    s6.clear(); s6.resize(n_bins, 0);
-    s7.clear(); s7.resize(n_bins, 0);
     if n_bins == 0 || values.is_empty() {
         return;
     }
@@ -950,36 +940,28 @@ fn count_into_bins_uniform_slice_8buf(
     let inv_step = n_bins as f64 / range;
     let nb = n_bins - 1;
 
-    let chunks = values.chunks_exact(8);
+    let chunks = values.chunks_exact(4);
     let rem = chunks.remainder();
     for chunk in chunks {
-        // 8 independent bin computations — CPU can pipeline all 8 simultaneously
+        // 4 independent bin computations — CPU can pipeline all 4 simultaneously
         let b0 = (((chunk[0] - first) * inv_step) as usize).min(nb);
         let b1 = (((chunk[1] - first) * inv_step) as usize).min(nb);
         let b2 = (((chunk[2] - first) * inv_step) as usize).min(nb);
         let b3 = (((chunk[3] - first) * inv_step) as usize).min(nb);
-        let b4 = (((chunk[4] - first) * inv_step) as usize).min(nb);
-        let b5 = (((chunk[5] - first) * inv_step) as usize).min(nb);
-        let b6 = (((chunk[6] - first) * inv_step) as usize).min(nb);
-        let b7 = (((chunk[7] - first) * inv_step) as usize).min(nb);
-        // Stores to 8 separate arrays — no RAW hazards, CPU can execute in parallel
+        // Stores to 4 separate arrays — no RAW hazards, CPU can execute in parallel
         s0[b0] += 1;
         s1[b1] += 1;
         s2[b2] += 1;
         s3[b3] += 1;
-        s4[b4] += 1;
-        s5[b5] += 1;
-        s6[b6] += 1;
-        s7[b7] += 1;
     }
-    // Handle remaining elements (< 8) in s0
+    // Handle remaining elements (< 4) in s0
     for &v in rem {
         let bin = (((v - first) * inv_step) as usize).min(nb);
         s0[bin] += 1;
     }
-    // Merge s1..s7 into s0
+    // Merge s1/s2/s3 into s0
     for i in 0..n_bins {
-        s0[i] += s1[i] + s2[i] + s3[i] + s4[i] + s5[i] + s6[i] + s7[i];
+        s0[i] += s1[i] + s2[i] + s3[i];
     }
 }
 
@@ -1031,16 +1013,12 @@ fn list_histogram(inputs: &[Series], kwargs: HistogramKwargs) -> PolarsResult<Se
 
     // Single scratch buffer reused across all rows to avoid N heap allocations
     let mut scratch: Vec<u32> = Vec::new();
-    // Seven extra scratch buffers for the 8-buffer scatter-add in bins_int mode.
-    // Using 8 independent buffers breaks the load-store dependency chain, allowing
-    // the CPU to pipeline 8 bin computations simultaneously.
+    // Three extra scratch buffers for the 4-buffer scatter-add in bins_int mode.
+    // Using 4 independent buffers breaks the load-store dependency chain, allowing
+    // the CPU to pipeline 4 bin computations simultaneously.
     let mut scratch1: Vec<u32> = Vec::new();
     let mut scratch2: Vec<u32> = Vec::new();
     let mut scratch3: Vec<u32> = Vec::new();
-    let mut scratch4: Vec<u32> = Vec::new();
-    let mut scratch5: Vec<u32> = Vec::new();
-    let mut scratch6: Vec<u32> = Vec::new();
-    let mut scratch7: Vec<u32> = Vec::new();
     // Values cache reused across rows — avoids a second Polars ChunkedArray pass in bins_int mode.
     // Pre-sized to a typical row length to avoid reallocation after the first few rows.
     let mut values_cache: Vec<f64> = Vec::with_capacity(1024);
@@ -1152,9 +1130,9 @@ fn list_histogram(inputs: &[Series], kwargs: HistogramKwargs) -> PolarsResult<Se
                         } else {
                             (min_val, max_val)
                         };
-                        // Count from the cached Vec using 8 independent scatter buffers
+                        // Count from the cached Vec using 4 independent scatter buffers
                         // to break the load-store dependency chain in the inner loop.
-                        count_into_bins_uniform_slice_8buf(
+                        count_into_bins_uniform_slice_4buf(
                             &values_cache,
                             n as usize,
                             first,
@@ -1163,10 +1141,6 @@ fn list_histogram(inputs: &[Series], kwargs: HistogramKwargs) -> PolarsResult<Se
                             &mut scratch1,
                             &mut scratch2,
                             &mut scratch3,
-                            &mut scratch4,
-                            &mut scratch5,
-                            &mut scratch6,
-                            &mut scratch7,
                         );
                         if let Some(ref mut b) = bp_builder {
                             let edges = edges_from_bins_int(n, min_val, max_val);
