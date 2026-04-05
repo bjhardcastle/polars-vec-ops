@@ -1062,25 +1062,34 @@ fn bins_int_parallel_flat(
                             }
                         };
 
+                        // Fused filter+copy+min/max in one pass: avoids a second scan of
+                        // values_cache (previously: extend loop + separate min/max loop).
                         values_cache.clear();
+                        let mut min_val = f64::INFINITY;
+                        let mut max_val = f64::NEG_INFINITY;
                         let cont = if ca.null_count() == 0 { ca.cont_slice().ok() } else { None };
                         match cont {
-                            Some(slice) => values_cache.extend(
-                                slice.iter().copied().filter(|v| v.is_finite())
-                            ),
-                            None => values_cache.extend(finite_values_iter(ca)),
+                            Some(slice) => {
+                                for &v in slice {
+                                    if v.is_finite() {
+                                        if v < min_val { min_val = v; }
+                                        if v > max_val { max_val = v; }
+                                        values_cache.push(v);
+                                    }
+                                }
+                            },
+                            None => {
+                                for v in finite_values_iter(ca) {
+                                    if v < min_val { min_val = v; }
+                                    if v > max_val { max_val = v; }
+                                    values_cache.push(v);
+                                }
+                            }
                         }
 
                         if values_cache.is_empty() {
                             out_slice.fill(0);
                             continue;
-                        }
-
-                        let mut min_val = values_cache[0];
-                        let mut max_val = values_cache[0];
-                        for &v in &values_cache[1..] {
-                            if v < min_val { min_val = v; }
-                            if v > max_val { max_val = v; }
                         }
                         let (first, last) = if min_val == max_val {
                             (min_val - 0.5, min_val + 0.5)
