@@ -455,8 +455,9 @@ class VecOpsNamespace:
         )
 
         # Post-process: cast counts dtype and/or unwrap struct
-        needs_cast = dtype_str is not None and dtype_str != "u32"
-        cast_map = {"bool": pl.Boolean, "u8": pl.UInt8, "u16": pl.UInt16}
+        # Rust emits UInt16 by default; cast only when an explicit non-u16 dtype is requested.
+        needs_cast = dtype_str is not None and dtype_str != "u16"
+        cast_map = {"bool": pl.Boolean, "u8": pl.UInt8, "u32": pl.UInt32}
         target = cast_map.get(dtype_str or "") if needs_cast else None
 
         if not include_breakpoints and target is not None:
@@ -472,11 +473,11 @@ class VecOpsNamespace:
                 _unwrap_and_cast, return_dtype=pl.List(target),
             )
         elif not include_breakpoints:
-            # Unwrap to just counts list (default u32)
+            # Unwrap to just counts list (default u16)
             def _unwrap(s: pl.Series) -> pl.Series:
                 return s.struct.field("counts").rename(s.name)
             result = result.map_batches(
-                _unwrap, return_dtype=pl.List(pl.UInt32),
+                _unwrap, return_dtype=pl.List(pl.UInt16),
             )
         elif target is not None:
             # Keep struct, cast counts dtype
