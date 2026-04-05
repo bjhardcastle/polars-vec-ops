@@ -713,13 +713,13 @@ fn histogram_output_type(input_fields: &[Field]) -> PolarsResult<Field> {
         dt => polars_bail!(InvalidOperation: "Expected List or Array type, got {:?}", dt),
     }
     // Note: output type is determined statically; actual dtype is applied at runtime.
-    // We default to UInt16 here (halves memory vs UInt32; max 65535 per bin).
+    // We default to UInt32 here since we can't access kwargs in output_type_func.
     // The runtime code casts to the correct dtype.
     Ok(Field::new(
         field.name().clone(),
         DataType::Struct(vec![
             Field::new("breakpoints".into(), DataType::List(Box::new(DataType::Float64))),
-            Field::new("counts".into(), DataType::List(Box::new(DataType::UInt16))),
+            Field::new("counts".into(), DataType::List(Box::new(DataType::UInt32))),
         ]),
     ))
 }
@@ -797,7 +797,7 @@ fn edges_from_bins_int(n_bins: u32, min_val: f64, max_val: f64) -> Vec<f64> {
 /// The scratch buffer is resized to n_bins and zeroed before use; caller retains the allocation.
 /// Bins are half-open: [edge_i, edge_{i+1}) except last bin [edge_{n-1}, edge_n].
 /// Values outside [edges[0], edges[last]] are excluded.
-fn count_into_bins_scratch(values: impl Iterator<Item = f64>, edges: &[f64], scratch: &mut Vec<u16>) {
+fn count_into_bins_scratch(values: impl Iterator<Item = f64>, edges: &[f64], scratch: &mut Vec<u32>) {
     let n_bins = edges.len() - 1;
     // Reuse the allocation: resize and zero without re-allocating if capacity suffices
     scratch.clear();
@@ -817,9 +817,9 @@ fn count_into_bins_scratch(values: impl Iterator<Item = f64>, edges: &[f64], scr
         }
         let bin = idx - 1;
         if bin >= n_bins {
-            scratch[n_bins - 1] = scratch[n_bins - 1].saturating_add(1);
+            scratch[n_bins - 1] += 1;
         } else {
-            scratch[bin] = scratch[bin].saturating_add(1);
+            scratch[bin] += 1;
         }
     }
 }
@@ -827,7 +827,7 @@ fn count_into_bins_scratch(values: impl Iterator<Item = f64>, edges: &[f64], scr
 /// Count values into uniformly-spaced bins using O(1) direct index computation.
 /// Avoids binary search for modes that always produce uniform edges ("bins_int", "range").
 /// Bins are half-open: [edge_i, edge_{i+1}) except last bin which is closed: [edge_{n-1}, edge_n].
-fn count_into_bins_uniform(values: impl Iterator<Item = f64>, edges: &[f64], scratch: &mut Vec<u16>) {
+fn count_into_bins_uniform(values: impl Iterator<Item = f64>, edges: &[f64], scratch: &mut Vec<u32>) {
     let n_bins = edges.len() - 1;
     scratch.clear();
     scratch.resize(n_bins, 0);
@@ -847,7 +847,7 @@ fn count_into_bins_uniform(values: impl Iterator<Item = f64>, edges: &[f64], scr
         }
         let bin = ((v - first) * inv_step) as usize;
         let bin = bin.min(n_bins - 1);
-        scratch[bin] = scratch[bin].saturating_add(1);
+        scratch[bin] += 1;
     }
 }
 
@@ -859,7 +859,7 @@ fn count_into_bins_uniform_direct(
     n_bins: usize,
     first: f64,
     last: f64,
-    scratch: &mut Vec<u16>,
+    scratch: &mut Vec<u32>,
 ) {
     scratch.clear();
     scratch.resize(n_bins, 0);
@@ -877,7 +877,7 @@ fn count_into_bins_uniform_direct(
         }
         let bin = ((v - first) * inv_step) as usize;
         let bin = bin.min(n_bins - 1);
-        scratch[bin] = scratch[bin].saturating_add(1);
+        scratch[bin] += 1;
     }
 }
 
@@ -886,10 +886,10 @@ fn validate_bin_count(_edges: &[f64]) -> PolarsResult<()> {
     Ok(())
 }
 
-/// Convert u16 counts to a Series.
-/// Always returns UInt16 to match the declared output schema.
+/// Convert u32 counts to a Series.
+/// Always returns UInt32 to match the declared output schema.
 /// Dtype conversion is handled in the Python wrapper.
-fn counts_to_series(counts: &[u16]) -> Series {
+fn counts_to_series(counts: &[u32]) -> Series {
     Series::new("".into(), counts)
 }
 
@@ -928,7 +928,7 @@ fn list_histogram(inputs: &[Series], kwargs: HistogramKwargs) -> PolarsResult<Se
     let use_uniform_bins = mode == "bins_int" || mode == "range";
 
     // Single scratch buffer reused across all rows to avoid N heap allocations
-    let mut scratch: Vec<u16> = Vec::new();
+    let mut scratch: Vec<u32> = Vec::new();
 
     // For "edges" mode, resolve edges once (they're the same for every row)
     let static_edges: Option<Vec<f64>> = if mode == "edges" {
@@ -954,12 +954,11 @@ fn list_histogram(inputs: &[Series], kwargs: HistogramKwargs) -> PolarsResult<Se
 
     // Use ListPrimitiveChunkedBuilder to pre-allocate a single flat buffer for all counts,
     // eliminating N per-row Series::new() calls and the intermediate Vec<Option<Series>>.
-    // UInt16 halves memory vs UInt32 (max 65535 per bin; saturating_add protects against overflow).
-    let mut counts_builder = ListPrimitiveChunkedBuilder::<UInt16Type>::new(
+    let mut counts_builder = ListPrimitiveChunkedBuilder::<UInt32Type>::new(
         "counts".into(),
         n_rows,
         n_rows * n_bins_hint,
-        DataType::UInt16,
+        DataType::UInt32,
     );
     let mut bp_builder = if include_breakpoints {
         Some(ListPrimitiveChunkedBuilder::<Float64Type>::new(
