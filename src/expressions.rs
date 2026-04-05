@@ -1106,7 +1106,7 @@ fn list_histogram(inputs: &[Series], kwargs: HistogramKwargs) -> PolarsResult<Se
     // Build struct output from pre-allocated flat buffers (single allocation path)
     let counts_list = counts_builder.finish().into_series();
 
-    let breakpoints_list = if let Some(b) = bp_builder {
+    let breakpoints_list = if let Some(mut b) = bp_builder {
         b.finish().into_series()
     } else {
         // All-null column with zero per-row allocations
