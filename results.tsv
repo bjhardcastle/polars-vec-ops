@@ -26,3 +26,5 @@ d0a5170	5000000	20.7	307.1	19.8	1.306	discard	two-pass direct scatter-add: skip 
 0b557fe	5000000	22.7	201.5	19.8	1.290	discard	lto=fat slightly slower than lto=thin (200.1ms vs 199.5ms) — thin LTO wins
 3b9398d	5000000	22.6	209.4	19.8	1.292	discard	8-value 4-buffer scatter-add: 5% wall time regression vs 4-value — same-bin conflicts or ILP overhead
 e2633be	5000000	22.7	318.9	19.8	1.330	discard	split filter+copy+min/max into 2 passes: 60% wall time regression — fused loop wins
+7958bfa	5000000	20.1	168.9	19.8	1.254	keep	direct Arrow buffer access: skip per-row get_as_series+cast+f64 — 15% wall time reduction
+b8d0011	5000000	20.0	165.3	19.8	1.252	keep	two-pass: eliminate values_cache — scatter-add directly on original slice (2% wall time reduction)
