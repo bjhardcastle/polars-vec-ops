@@ -1,0 +1,29 @@
+SHELL=/bin/bash
+
+venv:
+	python3 -m venv .venv
+	.venv/bin/pip install -r requirements.txt
+
+install:
+	unset CONDA_PREFIX && \
+	source .venv/bin/activate && maturin develop --skip-install
+
+install-release:
+	unset CONDA_PREFIX && \
+	source .venv/bin/activate && maturin develop --release --skip-install
+
+pre-commit:
+	cargo fmt --all && cargo clippy --all-features
+	.venv/bin/python -m ruff check . --fix --exit-non-zero-on-fix
+	.venv/bin/python -m ruff format polars_vec_ops tests
+	.venv/bin/mypy polars_vec_ops tests
+
+test:
+	.venv/bin/python -m pytest tests
+
+run: install
+	source .venv/bin/activate && python run.py
+
+run-release: install-release
+	source .venv/bin/activate && python run.py
+

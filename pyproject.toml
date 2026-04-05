@@ -1,0 +1,48 @@
+[project]
+name = "polars-vec-ops"
+requires-python = ">=3.9"
+classifiers = [
+  "Development Status :: 3 - Alpha",          # https://pypi.org/classifiers/
+  "Programming Language :: Rust",
+  "Programming Language :: Python :: Implementation :: CPython",
+  "Programming Language :: Python :: Implementation :: PyPy",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: Microsoft :: Windows",
+  "Operating System :: POSIX :: Linux",
+  "Operating System :: MacOS :: MacOS X",
+]
+dynamic = ["version"]
+dependencies = [
+    "polars>=1.8.0",
+]
+
+[project.urls]
+Repository = "https://github.com/bjhardcastle/polars-vec-ops"
+Issues = "https://github.com/bjhardcastle/polars-vec-ops/issues"
+
+[dependency-groups]
+dev = [
+    "maturin>=1.0,<2.0",
+    "numpy>=2.0.2",
+    "pytest>=8.4.2",
+    "typing_extensions; python_version<'3.10'",
+]
+
+[tool.uv]
+default-groups = ["dev"]
+package = false # must run `maturin develop` to rebuild Rust extension
+
+[build-system]
+requires = ["maturin>=1.0,<2.0", "polars>=1.8.0"]
+build-backend = "maturin"
+
+[tool.maturin]
+module-name = "polars_vec_ops._internal"
+
+[tool.pytest.ini_options]
+addopts = "--doctest-modules --doctest-glob='*.md' --doctest-continue-on-failure"
+testpaths = ["tests", "polars_vec_ops", "README.md"]
+
+[[tool.mypy.overrides]]
+module = "polars.utils.udfs"
+ignore_missing_imports = true

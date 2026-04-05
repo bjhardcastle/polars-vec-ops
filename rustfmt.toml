@@ -1,0 +1,114 @@
+#!/usr/bin/env python3
+"""
+Parse bench_histogram.py output and append a row to results.tsv.
+
+Usage:
+    python bench/log_result.py <run.log> <status> <description>
+
+Where:
+    run.log      — file containing stdout of bench_histogram.py
+    status       — keep | discard | crash
+    description  — short description of the experiment (quoted if it has spaces)
+
+Example:
+    python bench/log_result.py run.log keep "pre-allocate contiguous output buffer"
+
+The script reads baseline values from the first data row of results.tsv to compute
+the composite fitness score:
+
+    fitness = (output_elements / baseline_output_elements)
+            + (peak_memory_mb   / baseline_peak_memory_mb)
+            + (wall_time_ms     / baseline_wall_time_ms)
+
+For crash entries, metrics default to 0 and fitness to 0.
+"""
+
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+RESULTS_TSV = Path(__file__).parent.parent / "results.tsv"
+
+
+def get_commit() -> str:
+    return subprocess.check_output(["git", "rev-parse", "--short", "HEAD"]).decode().strip()
+
+
+def parse_metrics(log_text: str) -> dict[str, float]:
+    metrics: dict[str, float] = {}
+    for key in ("output_elements", "peak_memory_mb", "wall_time_ms", "output_size_mb"):
+        m = re.search(rf"^{key}:\s+([0-9.]+)", log_text, re.MULTILINE)
+        if m:
+            metrics[key] = float(m.group(1))
+    return metrics
+
+
+def read_baseline() -> dict[str, float]:
+    lines = RESULTS_TSV.read_text().splitlines()
+    # Skip header, find first data row with status 'keep'
+    for line in lines[1:]:
+        parts = line.split("\t")
+        if len(parts) >= 7 and parts[6] in ("keep",):
+            return {
+                "output_elements": float(parts[1]),
+                "peak_memory_mb": float(parts[2]),
+                "wall_time_ms": float(parts[3]),
+            }
+    raise ValueError("No baseline row found in results.tsv")
+
+
+def compute_fitness(metrics: dict[str, float], baseline: dict[str, float]) -> float:
+    if not metrics:
+        return 0.0
+    return (
+        metrics.get("output_elements", 0) / baseline["output_elements"]
+        + metrics.get("peak_memory_mb", 0) / baseline["peak_memory_mb"]
+        + metrics.get("wall_time_ms", 0) / baseline["wall_time_ms"]
+    )
+
+
+def main() -> None:
+    if len(sys.argv) < 4:
+        print(__doc__)
+        sys.exit(1)
+
+    log_path = Path(sys.argv[1])
+    status = sys.argv[2]
+    description = " ".join(sys.argv[3:])
+
+    commit = get_commit()
+    log_text = log_path.read_text() if log_path.exists() else ""
+
+    baseline = read_baseline()
+
+    if status == "crash":
+        metrics = {}
+        fitness = 0.0
+        row = f"{commit}\t0\t0.0\t0.0\t0.0\t0.000\t{status}\t{description}"
+    else:
+        metrics = parse_metrics(log_text)
+        fitness = compute_fitness(metrics, baseline)
+        row = (
+            f"{commit}"
+            f"\t{int(metrics.get('output_elements', 0))}"
+            f"\t{metrics.get('peak_memory_mb', 0.0):.1f}"
+            f"\t{metrics.get('wall_time_ms', 0.0):.1f}"
+            f"\t{metrics.get('output_size_mb', 0.0):.1f}"
+            f"\t{fitness:.3f}"
+            f"\t{status}"
+            f"\t{description}"
+        )
+
+    with RESULTS_TSV.open("a") as f:
+        f.write(row + "\n")
+
+    print(f"Logged: {row}")
+    print(f"Fitness: {fitness:.3f} (baseline = 3.000, lower is better)")
+
+
+if __name__ == "__main__":
+    main()
+group_imports = "StdExternalCrate"
+imports_granularity = "Module"
+match_block_trailing_comma = true
