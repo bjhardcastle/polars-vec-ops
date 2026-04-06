@@ -30,3 +30,4 @@ e2633be	5000000	22.7	318.9	19.8	1.330	discard	split filter+copy+min/max into 2 p
 b8d0011	5000000	20.0	165.3	19.8	1.252	keep	two-pass: eliminate values_cache — scatter-add directly on original slice (2% wall time reduction)
 dc52bb6	5000000	20.5	124.0	19.8	1.243	keep	two-loop scatter: vectorizable index computation (loop1) + unsafe scatter-add (loop2) — 25% wall time reduction
 d74db25	5000000	20.5	107.0	19.8	1.237	keep	2x thread oversubscription: mean 107ms (-14%), bimodal ~99ms/~119ms vs stable 124ms baseline
+d7d7aa6	5000000	21.6	32.0	19.8	1.223	keep	4x oversubscription + AVX-512F min/max: 10x fewer instr/row → faster DRAM streams, mean 32ms (-70%), bimodal ~24ms/~92ms
