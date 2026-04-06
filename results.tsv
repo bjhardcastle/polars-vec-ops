@@ -29,3 +29,4 @@ e2633be	5000000	22.7	318.9	19.8	1.330	discard	split filter+copy+min/max into 2 p
 7958bfa	5000000	20.1	168.9	19.8	1.254	keep	direct Arrow buffer access: skip per-row get_as_series+cast+f64 — 15% wall time reduction
 b8d0011	5000000	20.0	165.3	19.8	1.252	keep	two-pass: eliminate values_cache — scatter-add directly on original slice (2% wall time reduction)
 dc52bb6	5000000	20.5	124.0	19.8	1.243	keep	two-loop scatter: vectorizable index computation (loop1) + unsafe scatter-add (loop2) — 25% wall time reduction
+d74db25	5000000	20.5	107.0	19.8	1.237	keep	2x thread oversubscription: mean 107ms (-14%), bimodal ~99ms/~119ms vs stable 124ms baseline
