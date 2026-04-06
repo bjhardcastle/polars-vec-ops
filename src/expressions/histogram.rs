@@ -224,14 +224,14 @@ fn count_into_bins_uniform_slice(
     }
 }
 
-/// Count values into uniformly-spaced bins using 4 independent scatter buffers.
-/// Breaks the load-store dependency chain in the inner loop: the 4 bin index computations
-/// are independent (CPU can pipeline them), and the 4 stores go to different arrays
-/// (no RAW hazards between s0/s1/s2/s3 even when they hit the same bin index).
-/// Result is accumulated into s0 at the end.  s1/s2/s3 are pre-allocated scratch reused
-/// across rows to avoid per-row allocation overhead.
+/// Count values into uniformly-spaced bins using two-loop approach:
+/// Loop 1 computes all bin indices into a stack buffer (no scatter dependency — LLVM can
+/// auto-vectorize with AVX-512 vcvttpd2udq + vpminud), loop 2 scatter-adds using 4
+/// independent buffers to break RAW dependency chains.
+/// Unsafe bounds elimination in loop 2 removes 2 cmp+jae per quad.
 ///
 /// Caller must ensure s0/s1/s2/s3 all have capacity >= n_bins (they are resized here).
+/// SAFETY: values must all be finite and in [first, last] for to_int_unchecked.
 fn count_into_bins_uniform_slice_4buf(
     values: &[f64],
     n_bins: usize,
@@ -254,27 +254,55 @@ fn count_into_bins_uniform_slice_4buf(
         return;
     }
     let inv_step = n_bins as f64 / range;
-    let nb = n_bins - 1;
+    let nb = (n_bins - 1) as u32;
 
-    let chunks = values.chunks_exact(4);
-    let rem = chunks.remainder();
-    for chunk in chunks {
-        // 4 independent bin computations — CPU can pipeline all 4 simultaneously
-        let b0 = (((chunk[0] - first) * inv_step) as usize).min(nb);
-        let b1 = (((chunk[1] - first) * inv_step) as usize).min(nb);
-        let b2 = (((chunk[2] - first) * inv_step) as usize).min(nb);
-        let b3 = (((chunk[3] - first) * inv_step) as usize).min(nb);
-        // Stores to 4 separate arrays — no RAW hazards, CPU can execute in parallel
-        s0[b0] += 1;
-        s1[b1] += 1;
-        s2[b2] += 1;
-        s3[b3] += 1;
+    // Two-loop design: index computation (loop 1, vectorizable) then scatter (loop 2).
+    // Chunk size keeps idx_buf hot in L1 cache (4KB for CHUNK=1024).
+    const CHUNK: usize = 1024;
+    let mut idx_buf = [0u32; CHUNK];
+
+    let s0 = s0.as_mut_slice();
+    let s1 = s1.as_mut_slice();
+    let s2 = s2.as_mut_slice();
+    let s3 = s3.as_mut_slice();
+
+    let mut offset = 0;
+    while offset < values.len() {
+        let end = (offset + CHUNK).min(values.len());
+        let chunk = &values[offset..end];
+        let len = chunk.len();
+
+        // Loop 1: f64 → bin index, no inter-iteration dependency.
+        // SAFETY: values are finite and in [first, last], so the f64 result
+        // of (v - first) * inv_step is in [0.0, n_bins], safe for to_int_unchecked::<u32>.
+        for (idx, &v) in idx_buf[..len].iter_mut().zip(chunk.iter()) {
+            let raw = unsafe { ((v - first) * inv_step).to_int_unchecked::<u32>() };
+            *idx = raw.min(nb);
+        }
+
+        // Loop 2: scatter-add, 4-buffer ILP.
+        // SAFETY: all idx values <= nb < n_bins == s0/s1/s2/s3.len()
+        let quads = idx_buf[..len].chunks_exact(4);
+        let rem = quads.remainder();
+        for quad in quads {
+            let b0 = quad[0] as usize;
+            let b1 = quad[1] as usize;
+            let b2 = quad[2] as usize;
+            let b3 = quad[3] as usize;
+            unsafe {
+                *s0.get_unchecked_mut(b0) += 1;
+                *s1.get_unchecked_mut(b1) += 1;
+                *s2.get_unchecked_mut(b2) += 1;
+                *s3.get_unchecked_mut(b3) += 1;
+            }
+        }
+        for &bin in rem {
+            unsafe { *s0.get_unchecked_mut(bin as usize) += 1; }
+        }
+
+        offset = end;
     }
-    // Handle remaining elements (< 4) in s0
-    for &v in rem {
-        let bin = (((v - first) * inv_step) as usize).min(nb);
-        s0[bin] += 1;
-    }
+
     // Merge s1/s2/s3 into s0
     for i in 0..n_bins {
         s0[i] += s1[i] + s2[i] + s3[i];
