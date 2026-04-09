@@ -312,6 +312,7 @@ fn finite_values_iter(ca: &Float64Chunked) -> impl Iterator<Item = f64> + '_ {
 use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
 use std::sync::Mutex;
 
+
 // Permanently pinned output buffer — allocated once via Box::leak, never freed.
 // Physical pages stay in RSS across calls; subsequent calls zero-fill without
 // page faults → delta RSS for the main benchmark window ≈ 0.
@@ -748,6 +749,7 @@ fn list_histogram_bins_int_fast(inputs: &[Series], kwargs: BinsIntFastKwargs) ->
 
                             let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
                             for &v in slice { if v < lo { lo = v; } if v > hi { hi = v; } }
+                            let (lo, hi) = (lo, hi);
 
                             let has_non_finite = !lo.is_finite() || !hi.is_finite();
                             if lo > hi { out_slice.fill(0); continue; }
