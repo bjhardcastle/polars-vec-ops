@@ -412,16 +412,12 @@ fn bins_int_parallel_flat(
                             let end = offsets[i + 1] as usize;
                             let slice = &values_flat[start..end];
 
-                            // Pass 1: find min/max. NaN propagates; detected via is_finite() below.
-                            let (min_val, max_val) = {
-                                let mut lo = f64::INFINITY;
-                                let mut hi = f64::NEG_INFINITY;
-                                for &v in slice {
-                                    if v < lo { lo = v; }
-                                    if v > hi { hi = v; }
-                                }
-                                (lo, hi)
-                            };
+                            // Pass 1: find min/max via fold with f64::min/max — LLVM auto-vectorizes
+                            // these to SSE2 minpd/maxpd vs. branch-based cmov sequences.
+                            // NaN propagates through min/max (IEEE semantics), detected below.
+                            let min_val = slice.iter().copied().fold(f64::INFINITY, f64::min);
+                            let max_val = slice.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+                            let (min_val, max_val) = (min_val, max_val);
                             // If any element was NaN or ±Inf, min/max reflects it.
                             let has_non_finite = !min_val.is_finite() || !max_val.is_finite();
 
