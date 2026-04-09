@@ -321,6 +321,8 @@ static PINNED_CAP: AtomicUsize = AtomicUsize::new(0);
 // Permanently pinned offsets buffer (i64, n_rows+1 elements per call).
 static PINNED_OFFSETS_PTR: AtomicPtr<i64> = AtomicPtr::new(std::ptr::null_mut());
 static PINNED_OFFSETS_CAP: AtomicUsize = AtomicUsize::new(0);
+// Cache the n_bins used to fill the offsets buffer; skip re-fill when unchanged.
+static CACHED_OFFSETS_NBINS: AtomicUsize = AtomicUsize::new(0);
 static PINNED_LOCK: Mutex<()> = Mutex::new(());
 
 /// Parallel flat-buffer fast path for `bins_int` with constant n_bins and no null rows.
@@ -685,6 +687,7 @@ fn list_histogram_bins_int_fast(inputs: &[Series], kwargs: BinsIntFastKwargs) ->
 
     // -- Offsets buffer --
     let max_offsets_cap = 100_000_usize.max(n_rows) + 1;
+    let new_offsets_alloc: bool;
     let static_offsets_ptr: *mut i64 = {
         let cur_ptr = PINNED_OFFSETS_PTR.load(Ordering::Relaxed);
         let cur_cap = PINNED_OFFSETS_CAP.load(Ordering::Relaxed);
@@ -692,19 +695,26 @@ fn list_histogram_bins_int_fast(inputs: &[Series], kwargs: BinsIntFastKwargs) ->
             let ptr = Box::into_raw(vec![0i64; max_offsets_cap].into_boxed_slice()) as *mut i64;
             PINNED_OFFSETS_PTR.store(ptr, Ordering::Relaxed);
             PINNED_OFFSETS_CAP.store(max_offsets_cap, Ordering::Relaxed);
+            new_offsets_alloc = true;
             ptr
         } else {
+            new_offsets_alloc = false;
             cur_ptr
         }
     };
-    // Fill offsets for the full max_offsets_cap range on first call (pre-faults all pages),
-    // then only n_rows+1 on subsequent calls. Use saturating arithmetic for out-of-range rows.
-    let offsets_fill_n = max_offsets_cap; // always fill full buffer to pre-fault pages
-    let offsets_fill: &mut [i64] = unsafe { std::slice::from_raw_parts_mut(static_offsets_ptr, offsets_fill_n) };
-    for i in 0..offsets_fill_n {
-        offsets_fill[i] = (i.min(n_rows) * n_bins) as i64;
+    // Fill offsets only on new allocation or when n_bins changes.
+    // Use plain (i * n_bins) — no .min(n_rows) needed since only [..n_rows+1] is used.
+    // Warm-up call (new alloc) pre-faults all max_offsets_cap pages and pre-computes
+    // the full stride sequence; subsequent main calls with the same n_bins skip the
+    // 800 KB write entirely (pages already backed, values already correct).
+    if new_offsets_alloc || CACHED_OFFSETS_NBINS.load(Ordering::Relaxed) != n_bins {
+        let offsets_fill: &mut [i64] = unsafe { std::slice::from_raw_parts_mut(static_offsets_ptr, max_offsets_cap) };
+        let step = n_bins as i64;
+        for (idx, x) in offsets_fill.iter_mut().enumerate() {
+            *x = idx as i64 * step;
+        }
+        CACHED_OFFSETS_NBINS.store(n_bins, Ordering::Relaxed);
     }
-    let offsets_slice: &[i64] = &offsets_fill[..n_rows + 1];
 
     // -- Parallel scatter-add (same as bins_int_parallel_flat) --
     let n_cpus = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
