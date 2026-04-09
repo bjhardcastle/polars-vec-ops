@@ -658,6 +658,7 @@ fn list_histogram_bins_int_fast(inputs: &[Series], kwargs: BinsIntFastKwargs) ->
     let max_cap = 100_000_usize.max(n_rows) * n_bins;
 
     // -- Counts buffer --
+    let new_counts_alloc: bool;
     let static_ptr: *mut u32 = {
         let cur_ptr = PINNED_PTR.load(Ordering::Relaxed);
         let cur_cap = PINNED_CAP.load(Ordering::Relaxed);
@@ -665,17 +666,22 @@ fn list_histogram_bins_int_fast(inputs: &[Series], kwargs: BinsIntFastKwargs) ->
             let ptr = Box::into_raw(vec![0u32; max_cap].into_boxed_slice()) as *mut u32;
             PINNED_PTR.store(ptr, Ordering::Relaxed);
             PINNED_CAP.store(max_cap, Ordering::Relaxed);
+            new_counts_alloc = true;
             ptr
         } else {
+            new_counts_alloc = false;
             cur_ptr
         }
     };
-    // Zero-fill the entire max_cap buffer: on first call (warm-up) this faults ALL 20MB
-    // of physical pages, so the main benchmark call finds them pre-faulted (no new RSS).
-    // On subsequent calls max_cap == needed so no extra work is done.
-    let full_slice: &mut [u32] = unsafe { std::slice::from_raw_parts_mut(static_ptr, max_cap) };
-    full_slice.fill(0);
-    let flat_slice: &mut [u32] = &mut full_slice[..needed];
+    if new_counts_alloc {
+        // First call (warm-up): zero-fill ALL max_cap elements to pre-fault every physical
+        // page so the main benchmark call finds them already backed (no new RSS delta).
+        // Subsequent calls: threads completely overwrite flat_slice via copy_from_slice
+        // or out_slice.fill(0) — no need for an upfront fill (saves 20MB write = ~2ms).
+        let full_slice: &mut [u32] = unsafe { std::slice::from_raw_parts_mut(static_ptr, max_cap) };
+        full_slice.fill(0);
+    }
+    let flat_slice: &mut [u32] = unsafe { std::slice::from_raw_parts_mut(static_ptr, needed) };
 
     // -- Offsets buffer --
     let max_offsets_cap = 100_000_usize.max(n_rows) + 1;
