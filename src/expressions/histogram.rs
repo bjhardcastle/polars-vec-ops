@@ -234,6 +234,7 @@ fn count_into_bins_uniform_slice(
 ///
 /// Caller must ensure s0/s1/s2/s3 all have capacity >= n_bins (they are resized here).
 /// SAFETY: values must all be finite and in [first, last].
+#[inline(always)]
 fn count_into_bins_uniform_slice_4buf(
     values: &[f64],
     n_bins: usize,
