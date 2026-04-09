@@ -415,6 +415,19 @@ class VecOpsNamespace:
                     f"count_dtype must be pl.Boolean, pl.UInt8, pl.UInt16, pl.UInt32, bool, or int, got {count_dtype!r}"
                 )
 
+        # Fast path: bins=int, no breakpoints, no dtype cast → direct List(UInt32) output.
+        # list_histogram_bins_int_fast returns List(UInt32) via zero-copy static buffers,
+        # eliminating the Struct wrapper and the map_batches 20MB copy allocation.
+        if isinstance(bins, int) and not include_breakpoints and dtype_str is None:
+            return register_plugin_function(
+                args=[self._expr],
+                plugin_path=LIB,
+                function_name="list_histogram_bins_int_fast",
+                is_elementwise=True,
+                returns_scalar=False,
+                kwargs={"bins_int": bins},
+            )
+
         args: list[pl.Expr] = [self._expr]
         kwargs: dict = {"arg_positions": {}, "count_dtype": dtype_str, "include_breakpoints": include_breakpoints}
 
