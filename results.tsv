@@ -62,3 +62,4 @@ a20d84d	5000000	0.0	0.0	0.0	0.000	crash	UInt16 output dtype: polars 1.39.3 Pytho
 9b52f8c	5000000	0.3	71.8	19.8	1.027	keep	pinned static buffers + direct List(UInt32) output: peak_memory 21.7MB→0.3MB, -17% fitness
 f2f595a	5000000	0.3	50.1	19.8	1.020	keep	skip fill on reuse: only zero-fill static counts buffer on new allocation; reuse calls skip 20MB write (~2ms savings)
 fee8691	5000000	0.3	72.0	19.8	1.027	discard	cache offsets fill by n_bins: skip 800KB write on reuse; timing within noise vs f2f595a
+b0ad396	5000000	0.3	89.7	19.8	1.033	discard	AVX-512DQ min/max (8 doubles/iter): Cascade Lake all-core freq throttle causes 2-3x regression
