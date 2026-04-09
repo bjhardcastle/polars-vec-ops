@@ -1,24 +1,8 @@
 #![allow(clippy::unused_unit)]
 use std::collections::HashMap;
-use std::sync::OnceLock;
 use polars::prelude::*;
 use pyo3_polars::derive::polars_expr;
 use super::helpers::ensure_list_type;
-
-// --- Global persistent thread pool for histogram parallelism ---
-// Initialized once on first use; avoids per-call OS thread creation overhead.
-// 4× oversubscription hides DRAM latency by keeping more concurrent streams active.
-static POOL: OnceLock<rayon::ThreadPool> = OnceLock::new();
-
-fn histogram_pool() -> &'static rayon::ThreadPool {
-    POOL.get_or_init(|| {
-        let n_cpus = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
-        rayon::ThreadPoolBuilder::new()
-            .num_threads(n_cpus * 4)
-            .build()
-            .expect("failed to build histogram thread pool")
-    })
-}
 
 // --- Histogram ---
 
@@ -371,8 +355,11 @@ fn bins_int_parallel_flat(
     // Single flat output buffer — no per-thread duplication
     let mut flat_counts = vec![0u32; n_rows * n_bins];
 
-    // Use the persistent global pool (4× oversubscription) — no per-call thread creation.
-    let n_threads = histogram_pool().current_num_threads().min(n_rows);
+    // 4× oversubscription: more concurrent DRAM streams → higher effective bandwidth
+    let n_threads = (std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4) * 4)
+        .min(n_rows);
 
     let rows_per_thread = (n_rows + n_threads - 1) / n_threads;
 
@@ -382,14 +369,13 @@ fn bins_int_parallel_flat(
     {
         let chunks: Vec<&mut [u32]> = flat_counts.chunks_mut(rows_per_thread * n_bins).collect();
 
-        histogram_pool().install(|| {
-            rayon::scope(|scope| {
-                for (thread_idx, output_chunk) in chunks.into_iter().enumerate() {
-                    let start_row = thread_idx * rows_per_thread;
-                    let end_row = (start_row + rows_per_thread).min(n_rows);
-                    let err_ref = &thread_error;
+        std::thread::scope(|scope| {
+            for (thread_idx, output_chunk) in chunks.into_iter().enumerate() {
+                let start_row = thread_idx * rows_per_thread;
+                let end_row = (start_row + rows_per_thread).min(n_rows);
+                let err_ref = &thread_error;
 
-                    scope.spawn(move |_| {
+                scope.spawn(move || {
                     // Per-thread scratch buffers (4-buffer scatter-add)
                     let mut s0 = vec![0u32; n_bins];
                     let mut s1 = vec![0u32; n_bins];
@@ -508,9 +494,8 @@ fn bins_int_parallel_flat(
                             out_slice.copy_from_slice(&s0);
                         }
                     }
-                    });
-                }
-            });
+                });
+            }
         });
     }
 
