@@ -32,3 +32,7 @@ dc52bb6	5000000	20.5	124.0	19.8	1.243	keep	two-loop scatter: vectorizable index 
 d74db25	5000000	20.5	107.0	19.8	1.237	keep	2x thread oversubscription: mean 107ms (-14%), bimodal ~99ms/~119ms vs stable 124ms baseline
 d7d7aa6	5000000	21.6	32.0	19.8	1.223	keep	4x oversubscription + AVX-512F min/max: 10x fewer instr/row → faster DRAM streams, mean 32ms (-70%), bimodal ~24ms/~92ms
 16e0c29	5000000	22.1	71.0	19.8	1.241	keep	new baseline after removing AVX-512 and target-cpu=native
+425ff84	5000000	20.5	269.2	19.8	1.291	discard	fold-based min/max: two separate passes over data doubles reads (269ms, regressed)
+a5a95a3	5000000	21.0	153.6	19.8	1.257	discard	single-pass tuple fold min/max: LLVM can't vectorize interleaved (min,max) reduction as effectively (153ms)
+4a0424a	5000000	21.4	159.8	19.8	1.263	discard	8x thread oversubscription: too much context-switching overhead — 159ms regressed vs 71ms
+5d4ed85	5000000	22.1	66.9	19.8	1.239	keep	fused single-pass scatter-add: eliminate 4KB idx_buf intermediate — 5.8% wall time reduction vs baseline
