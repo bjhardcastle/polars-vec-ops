@@ -291,60 +291,6 @@ fn count_into_bins_uniform_slice_4buf(
     }
 }
 
-/// Scatter-add values directly into an output slice, using s1/s2/s3 as scratch.
-/// Writes merged result to `out` directly — no s0 intermediate, no copy needed.
-/// `out` must have length n_bins and will be zeroed then filled with counts.
-/// SAFETY: values must all be finite and in [first, last].
-#[inline(always)]
-fn scatter_add_direct(
-    values: &[f64],
-    n_bins: usize,
-    first: f64,
-    last: f64,
-    out: &mut [u32],
-    s1: &mut Vec<u32>,
-    s2: &mut Vec<u32>,
-    s3: &mut Vec<u32>,
-) {
-    out.fill(0);
-    s1.clear(); s1.resize(n_bins, 0);
-    s2.clear(); s2.resize(n_bins, 0);
-    s3.clear(); s3.resize(n_bins, 0);
-    if n_bins == 0 || values.is_empty() {
-        return;
-    }
-    let range = last - first;
-    if range <= 0.0 {
-        return;
-    }
-    let inv_step = n_bins as f64 / range;
-    let nb = n_bins - 1;
-    let s1 = s1.as_mut_slice();
-    let s2 = s2.as_mut_slice();
-    let s3 = s3.as_mut_slice();
-    let quads = values.chunks_exact(4);
-    let rem = quads.remainder();
-    for quad in quads {
-        let b0 = (unsafe { ((quad[0] - first) * inv_step).to_int_unchecked::<u32>() } as usize).min(nb);
-        let b1 = (unsafe { ((quad[1] - first) * inv_step).to_int_unchecked::<u32>() } as usize).min(nb);
-        let b2 = (unsafe { ((quad[2] - first) * inv_step).to_int_unchecked::<u32>() } as usize).min(nb);
-        let b3 = (unsafe { ((quad[3] - first) * inv_step).to_int_unchecked::<u32>() } as usize).min(nb);
-        unsafe {
-            *out.get_unchecked_mut(b0) += 1;
-            *s1.get_unchecked_mut(b1) += 1;
-            *s2.get_unchecked_mut(b2) += 1;
-            *s3.get_unchecked_mut(b3) += 1;
-        }
-    }
-    for &v in rem {
-        let b = (unsafe { ((v - first) * inv_step).to_int_unchecked::<u32>() } as usize).min(nb);
-        unsafe { *out.get_unchecked_mut(b) += 1; }
-    }
-    for i in 0..n_bins {
-        out[i] += s1[i] + s2[i] + s3[i];
-    }
-}
-
 /// Validate that the number of bins doesn't exceed the safety limit.
 fn validate_bin_count(_edges: &[f64]) -> PolarsResult<()> {
     Ok(())
@@ -430,8 +376,8 @@ fn bins_int_parallel_flat(
                 let err_ref = &thread_error;
 
                 scope.spawn(move || {
-                    // Per-thread scratch buffers: s1/s2/s3 for 4-buffer ILP scatter-add.
-                    // s0 eliminated — output goes directly to out_slice (no copy step).
+                    // Per-thread scratch buffers (4-buffer scatter-add)
+                    let mut s0 = vec![0u32; n_bins];
                     let mut s1 = vec![0u32; n_bins];
                     let mut s2 = vec![0u32; n_bins];
                     let mut s3 = vec![0u32; n_bins];
@@ -472,20 +418,22 @@ fn bins_int_parallel_flat(
                             };
 
                             if !has_non_finite {
-                                // All finite: scatter directly to out_slice, no copy needed.
-                                scatter_add_direct(
+                                // All finite: scatter-add directly on original slice.
+                                // Eliminates 8KB write (to values_cache) + 8KB read per row.
+                                count_into_bins_uniform_slice_4buf(
                                     slice, n_bins, first, last,
-                                    out_slice, &mut s1, &mut s2, &mut s3,
+                                    &mut s0, &mut s1, &mut s2, &mut s3,
                                 );
                             } else {
                                 // Rare path: filter into cache, then scatter-add
                                 values_cache.clear();
                                 values_cache.extend(slice.iter().copied().filter(|v| v.is_finite()));
-                                scatter_add_direct(
+                                count_into_bins_uniform_slice_4buf(
                                     &values_cache, n_bins, first, last,
-                                    out_slice, &mut s1, &mut s2, &mut s3,
+                                    &mut s0, &mut s1, &mut s2, &mut s3,
                                 );
                             }
+                            out_slice.copy_from_slice(&s0);
                         } else {
                             // Fallback: Polars API path (handles multi-chunk, non-f64, nullable values)
                             let row_series = match list_chunked.get_as_series(i) {
@@ -539,10 +487,11 @@ fn bins_int_parallel_flat(
                             } else {
                                 (min_val, max_val)
                             };
-                            scatter_add_direct(
+                            count_into_bins_uniform_slice_4buf(
                                 &values_cache, n_bins, first, last,
-                                out_slice, &mut s1, &mut s2, &mut s3,
+                                &mut s0, &mut s1, &mut s2, &mut s3,
                             );
+                            out_slice.copy_from_slice(&s0);
                         }
                     }
                 });
