@@ -355,26 +355,22 @@ fn bins_int_parallel_flat(
     // Single flat output buffer — no per-thread duplication
     let mut flat_counts = vec![0u32; n_rows * n_bins];
 
-    // 3.25× oversubscription: 52 threads on 16 CPUs hides DRAM latency
+    // 3.25× oversubscription: explore between 3x (62ms best) and 3.5x (55ms best)
     let n_cpus = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
     let n_threads = (n_cpus * 13 / 4).max(1).min(n_rows);
 
-    // Work-stealing: atomic row counter eliminates straggler effect from
-    // uneven thread start times. Threads pull WORK_CHUNK rows at a time.
-    const WORK_CHUNK: usize = 16;
-    let next_row = std::sync::atomic::AtomicUsize::new(0);
+    let rows_per_thread = (n_rows + n_threads - 1) / n_threads;
 
     // Use Mutex to collect errors from threads without adding a new crate
     let thread_error: std::sync::Mutex<Option<PolarsError>> = std::sync::Mutex::new(None);
 
-    // Cast to usize for Send-safe closure capture; reconstituted as *mut u32 inside threads.
-    // Safety: atomic fetch_add guarantees each row index is owned by exactly one thread.
-    let flat_ptr_usize: usize = flat_counts.as_mut_ptr() as usize;
-
     {
+        let chunks: Vec<&mut [u32]> = flat_counts.chunks_mut(rows_per_thread * n_bins).collect();
+
         std::thread::scope(|scope| {
-            for _ in 0..n_threads {
-                let next_row = &next_row;
+            for (thread_idx, output_chunk) in chunks.into_iter().enumerate() {
+                let start_row = thread_idx * rows_per_thread;
+                let end_row = (start_row + rows_per_thread).min(n_rows);
                 let err_ref = &thread_error;
 
                 scope.spawn(move || {
@@ -386,17 +382,9 @@ fn bins_int_parallel_flat(
                     // values_cache used only for the rare has_non_finite fallback path
                     let mut values_cache = Vec::<f64>::new();
 
-                    loop {
-                        let chunk_start = next_row.fetch_add(WORK_CHUNK, std::sync::atomic::Ordering::Relaxed);
-                        if chunk_start >= n_rows { break; }
-                        let chunk_end = (chunk_start + WORK_CHUNK).min(n_rows);
-
-                    for i in chunk_start..chunk_end {
-                        // SAFETY: i < n_rows ensures i*n_bins + n_bins <= flat_counts.len().
-                        // Each i is owned by exactly one thread via atomic fetch_add.
-                        let out_slice = unsafe {
-                            std::slice::from_raw_parts_mut((flat_ptr_usize as *mut u32).add(i * n_bins), n_bins)
-                        };
+                    for i in start_row..end_row {
+                        let out_offset = (i - start_row) * n_bins;
+                        let out_slice = &mut output_chunk[out_offset..out_offset + n_bins];
 
                         if let Some((offsets, values_flat)) = direct_data {
                             // Direct Arrow buffer path: zero-copy slice into flat values buffer.
@@ -503,8 +491,7 @@ fn bins_int_parallel_flat(
                             );
                             out_slice.copy_from_slice(&s0);
                         }
-                    } // for i in chunk_start..chunk_end
-                    } // loop (work-stealing)
+                    }
                 });
             }
         });
