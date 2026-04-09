@@ -54,3 +54,5 @@ d5f0a74	5000000	21.7	83.1	19.8	1.241	discard	64KB stack (vs 8MB default): no gai
 7b3e270	5000000	21.7	121.9	19.8	1.254	discard	direct-write scatter (s0+s1+s2+s3 → out_slice): eliminates copy_from_slice but L1 bandwidth is not bottleneck
 6fd969b	5000000	21.7	183.5	19.8	1.274	discard	spinning thread pool (global call_id): 52 workers spinning on single AtomicU64 saturate LLC bandwidth — thundering herd; 3.5x regression
 548e3f2	5000000	21.7	78.2	19.8	1.239	keep	baseline re-run on new session (lower DRAM bandwidth ~7.6 GB/s vs ~15 GB/s prev); reverted spinning pool
+684651b	5000000	21.7	82.3	19.8	1.240	discard	4x oversubscription (64 threads): best 82ms worse than 52 threads (78ms); slow mode 153ms also worse
+adf141e	5000000	0.0	0.0	0.0	0.000	crash	UInt16 output dtype: polars 0.51 LargeList<UInt16> plugin output crashes Python SIGABRT (same as ed8a0a9 f43b893)
