@@ -373,7 +373,10 @@ fn bins_int_parallel_flat(
                 let end_row = (start_row + rows_per_thread).min(n_rows);
                 let err_ref = &thread_error;
 
-                scope.spawn(move || {
+                // 64 KB stack: scratch bufs need <2 KB; default 8 MB wastes mmap time
+                std::thread::Builder::new()
+                    .stack_size(65536)
+                    .spawn_scoped(scope, move || {
                     // Per-thread scratch buffers (4-buffer scatter-add)
                     let mut s0 = vec![0u32; n_bins];
                     let mut s1 = vec![0u32; n_bins];
@@ -492,7 +495,7 @@ fn bins_int_parallel_flat(
                             out_slice.copy_from_slice(&s0);
                         }
                     }
-                });
+                    }).unwrap(); // spawn_scoped returns Result
             }
         });
     }
