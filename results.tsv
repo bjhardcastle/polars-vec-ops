@@ -58,3 +58,4 @@ d5f0a74	5000000	21.7	83.1	19.8	1.241	discard	64KB stack (vs 8MB default): no gai
 adf141e	5000000	0.0	0.0	0.0	0.000	crash	UInt16 output dtype: polars 0.51 LargeList<UInt16> plugin output crashes Python SIGABRT (same as ed8a0a9 f43b893)
 b3b4098	5000000	21.8	124.3	19.8	1.307	discard	2.75x oversubscription (44 threads): 124ms regressed vs 52 threads (78ms); fewer threads under-saturate bandwidth on this host
 47f2e00	5000000	22.0	125.4	19.8	1.307	discard	3.5x oversubscription (56 threads): 125ms slow mode dominant vs 52 threads 78ms; bimodal 93/127ms
+a20d84d	5000000	0.0	0.0	0.0	0.000	crash	UInt16 output dtype: polars 1.39.3 Python still SIGABRT on LargeList<UInt16> plugin output
