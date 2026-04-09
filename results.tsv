@@ -48,3 +48,4 @@ a976d41	5000000	21.8	55.1	19.8	1.232	keep	3.5x thread oversubscription (56 threa
 79c7898	5000000	20.2	52.6	19.8	1.216	keep	3.25x thread oversubscription (52 threads): 52.6ms first run, fitness 1.231
 21eacac	5000000	21.7	103.8	19.8	1.248	discard	3.125x (50 threads): min 82.5ms worse than 3.25x (52.6ms), median ~94ms worse than 3.25x (83ms)
 127d612	5000000	21.7	147.8	19.8	1.262	discard	#[inline(always)] on scatter-add: no gain — with lto=thin LLVM already inlines across codegen units
+4f2bacb	5000000	21.7	113.9	19.8	1.251	discard	skip zero-init flat_counts (MaybeUninit): no gain — calloc already lazy; page faults contend in parallel threads
