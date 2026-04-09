@@ -44,3 +44,5 @@ f0fd9da	5000000	21.9	127.5	19.8	1.258	discard	AVX2 (x86-64-v3): no gain — bott
 58f90fd	5000000	21.7	83.3	19.8	1.241	discard	3x thread oversubscription (48 threads): median improves 4x (83ms vs logged 66.9ms) but single-run fitness 1.241>1.239
 a864b84	5000000	21.7	62.4	19.8	1.234	keep	3x thread oversubscription (48 threads): better median (94ms vs 126ms) reduces jitter; best run 62.4ms
 a976d41	5000000	21.8	55.1	19.8	1.232	keep	3.5x thread oversubscription (56 threads): 55.1ms best run, fitness 1.231
+243772d	5000000	21.8	84.0	19.8	1.242	discard	3.75x (60 threads): best run 65.5ms worse than 3.5x (55.1ms); fewer sub-77ms runs (33% vs 43%)
+79c7898	5000000	20.2	52.6	19.8	1.216	keep	3.25x thread oversubscription (52 threads): 52.6ms first run, fitness 1.231
