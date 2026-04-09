@@ -50,3 +50,5 @@ a976d41	5000000	21.8	55.1	19.8	1.232	keep	3.5x thread oversubscription (56 threa
 127d612	5000000	21.7	147.8	19.8	1.262	discard	#[inline(always)] on scatter-add: no gain — with lto=thin LLVM already inlines across codegen units
 4f2bacb	5000000	21.7	113.9	19.8	1.251	discard	skip zero-init flat_counts (MaybeUninit): no gain — calloc already lazy; page faults contend in parallel threads
 593bd33	5000000	21.7	92.3	19.8	1.244	discard	work-stealing atomic row counter: uniform row sizes make static assignment already balanced; atomic overhead dominates
+d5f0a74	5000000	21.7	83.1	19.8	1.241	discard	64KB stack (vs 8MB default): no gain — thread spawn cost is syscall/TLS overhead, not mmap size
+7b3e270	5000000	21.7	121.9	19.8	1.254	discard	direct-write scatter (s0+s1+s2+s3 → out_slice): eliminates copy_from_slice but L1 bandwidth is not bottleneck
