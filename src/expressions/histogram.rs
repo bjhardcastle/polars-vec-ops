@@ -412,14 +412,16 @@ fn bins_int_parallel_flat(
                             let end = offsets[i + 1] as usize;
                             let slice = &values_flat[start..end];
 
-                            // Pass 1: single-pass min/max via tuple fold with f64::min/max.
-                            // LLVM can vectorize interleaved min+max reductions to SSE2 minpd/maxpd
-                            // while keeping a single pass over the data (vs. branch-based which
-                            // may serialize due to data-dependent conditional moves).
-                            let (min_val, max_val) = slice.iter().copied().fold(
-                                (f64::INFINITY, f64::NEG_INFINITY),
-                                |(lo, hi), v| (lo.min(v), hi.max(v)),
-                            );
+                            // Pass 1: find min/max. NaN propagates; detected via is_finite() below.
+                            let (min_val, max_val) = {
+                                let mut lo = f64::INFINITY;
+                                let mut hi = f64::NEG_INFINITY;
+                                for &v in slice {
+                                    if v < lo { lo = v; }
+                                    if v > hi { hi = v; }
+                                }
+                                (lo, hi)
+                            };
                             // If any element was NaN or ±Inf, min/max reflects it.
                             let has_non_finite = !min_val.is_finite() || !max_val.is_finite();
 
