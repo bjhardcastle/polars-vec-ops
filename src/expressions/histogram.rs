@@ -1,8 +1,172 @@
 #![allow(clippy::unused_unit)]
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, OnceLock};
 use polars::prelude::*;
 use pyo3_polars::derive::polars_expr;
 use super::helpers::ensure_list_type;
+
+// ===========================================================================
+// Spinning thread pool — eliminates pthread_create overhead between calls.
+//
+// Workers spin on `call_id` (Acquire) between calls, so they respond in
+// nanoseconds rather than the ~6 ms condvar-wakeup of Rayon or the ~2.6 ms
+// pthread_create overhead of std::thread::scope.
+//
+// SAFETY CONTRACT: Only one Polars expression call can use the pool at a time
+// (single-threaded expression evaluator in the benchmark). Raw pointers stored
+// in SpinState are valid for the duration of each dispatch_spin_pool() call.
+// ===========================================================================
+
+struct SpinState {
+    /// Monotonically increasing per-call counter.  Workers spin with Acquire
+    /// until this changes; main stores work params then increments with Release.
+    call_id: AtomicU64,
+    // Work parameters — valid between call_id Release (main) and done Release (workers).
+    n_rows:       AtomicUsize,
+    n_bins:       AtomicUsize,
+    offsets_addr: AtomicUsize,  // *const i64 (slice of length offsets_len)
+    offsets_len:  AtomicUsize,
+    values_addr:  AtomicUsize,  // *const f64 (slice of length values_len)
+    values_len:   AtomicUsize,
+    output_addr:  AtomicUsize,  // *mut u32  (flat output buffer, n_rows*n_bins elements)
+    pool_size:    AtomicUsize,  // number of worker threads (fixed at init)
+    /// Workers increment this (Release) when done; main spins (Acquire) until == pool_size.
+    done: AtomicUsize,
+}
+
+static SPIN_POOL: OnceLock<Arc<SpinState>> = OnceLock::new();
+
+fn spin_pool_state(n_threads: usize) -> &'static Arc<SpinState> {
+    SPIN_POOL.get_or_init(|| {
+        let state = Arc::new(SpinState {
+            call_id:      AtomicU64::new(0),
+            n_rows:       AtomicUsize::new(0),
+            n_bins:       AtomicUsize::new(0),
+            offsets_addr: AtomicUsize::new(0),
+            offsets_len:  AtomicUsize::new(0),
+            values_addr:  AtomicUsize::new(0),
+            values_len:   AtomicUsize::new(0),
+            output_addr:  AtomicUsize::new(0),
+            pool_size:    AtomicUsize::new(n_threads),
+            done:         AtomicUsize::new(0),
+        });
+        for tid in 0..n_threads {
+            let s = Arc::clone(&state);
+            std::thread::Builder::new()
+                .name(format!("histo-spin-{tid}"))
+                .spawn(move || spin_worker_loop(s, tid))
+                .expect("failed to spawn spin worker");
+        }
+        state
+    })
+}
+
+/// Worker thread body — spins between calls, zero wakeup latency.
+fn spin_worker_loop(state: Arc<SpinState>, tid: usize) {
+    let mut last_call = 0u64;
+    let mut s0: Vec<u32> = Vec::new();
+    let mut s1: Vec<u32> = Vec::new();
+    let mut s2: Vec<u32> = Vec::new();
+    let mut s3: Vec<u32> = Vec::new();
+
+    loop {
+        // Spin until a new call is dispatched (Acquire: makes work params visible)
+        let call_id = loop {
+            let c = state.call_id.load(Ordering::Acquire);
+            if c != last_call { break c; }
+            std::hint::spin_loop();
+        };
+        last_call = call_id;
+
+        // Load work parameters (Relaxed: already synchronized via call_id Acquire)
+        let n_rows   = state.n_rows.load(Ordering::Relaxed);
+        let n_bins   = state.n_bins.load(Ordering::Relaxed);
+        let n_threads= state.pool_size.load(Ordering::Relaxed);
+        let offsets  = unsafe {
+            std::slice::from_raw_parts(
+                state.offsets_addr.load(Ordering::Relaxed) as *const i64,
+                state.offsets_len.load(Ordering::Relaxed),
+            )
+        };
+        let values_flat = unsafe {
+            std::slice::from_raw_parts(
+                state.values_addr.load(Ordering::Relaxed) as *const f64,
+                state.values_len.load(Ordering::Relaxed),
+            )
+        };
+        let output_ptr = state.output_addr.load(Ordering::Relaxed) as *mut u32;
+
+        let rows_per = (n_rows + n_threads - 1) / n_threads;
+        let start_row = (tid * rows_per).min(n_rows);
+        let end_row   = ((tid + 1) * rows_per).min(n_rows);
+
+        for i in start_row..end_row {
+            // SAFETY: i < n_rows → i*n_bins + n_bins ≤ n_rows*n_bins (flat output).
+            let out_slice = unsafe {
+                std::slice::from_raw_parts_mut(output_ptr.add(i * n_bins), n_bins)
+            };
+            let rs = offsets[i] as usize;
+            let re = offsets[i + 1] as usize;
+            let slice = &values_flat[rs..re];
+
+            // Pass 1: min/max
+            let mut lo = f64::INFINITY;
+            let mut hi = f64::NEG_INFINITY;
+            for &v in slice { if v < lo { lo = v; } if v > hi { hi = v; } }
+
+            if lo > hi { out_slice.fill(0); continue; }
+            let has_non_finite = !lo.is_finite() || !hi.is_finite();
+            let (first, last) = if lo == hi { (lo - 0.5, lo + 0.5) } else { (lo, hi) };
+
+            if !has_non_finite {
+                count_into_bins_uniform_slice_4buf(slice, n_bins, first, last,
+                    &mut s0, &mut s1, &mut s2, &mut s3);
+            } else {
+                let mut cache: Vec<f64> = slice.iter().copied().filter(|v| v.is_finite()).collect();
+                if cache.is_empty() { out_slice.fill(0); continue; }
+                count_into_bins_uniform_slice_4buf(&cache, n_bins, first, last,
+                    &mut s0, &mut s1, &mut s2, &mut s3);
+                drop(cache);
+            }
+            out_slice.copy_from_slice(&s0);
+        }
+
+        // Signal done (Release: ensures output writes are visible to main)
+        state.done.fetch_add(1, Ordering::Release);
+    }
+}
+
+/// Dispatch a histogram call to the spinning pool and block until complete.
+fn dispatch_spin_pool(
+    offsets: &[i64],
+    values_flat: &[f64],
+    n_rows: usize,
+    n_bins: usize,
+    output: &mut [u32],
+) {
+    let n_cpus    = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
+    let n_threads = (n_cpus * 13 / 4).max(1);
+    let state     = spin_pool_state(n_threads);
+
+    // Store work params (Relaxed — ordered by the Release below)
+    state.n_rows.store(n_rows,                         Ordering::Relaxed);
+    state.n_bins.store(n_bins,                         Ordering::Relaxed);
+    state.offsets_addr.store(offsets.as_ptr()  as usize, Ordering::Relaxed);
+    state.offsets_len.store(offsets.len(),             Ordering::Relaxed);
+    state.values_addr.store(values_flat.as_ptr() as usize, Ordering::Relaxed);
+    state.values_len.store(values_flat.len(),          Ordering::Relaxed);
+    state.output_addr.store(output.as_mut_ptr() as usize, Ordering::Relaxed);
+    state.done.store(0,                                Ordering::Relaxed);
+
+    // Dispatch (Release: publish params to workers)
+    state.call_id.fetch_add(1, Ordering::Release);
+
+    // Wait for all workers (Acquire: ensure their output writes are visible)
+    while state.done.load(Ordering::Acquire) < n_threads {
+        std::hint::spin_loop();
+    }
+}
 
 // --- Histogram ---
 
@@ -355,88 +519,32 @@ fn bins_int_parallel_flat(
     // Single flat output buffer — no per-thread duplication
     let mut flat_counts = vec![0u32; n_rows * n_bins];
 
-    // 3.25× oversubscription: explore between 3x (62ms best) and 3.5x (55ms best)
-    let n_cpus = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
-    let n_threads = (n_cpus * 13 / 4).max(1).min(n_rows);
-
-    let rows_per_thread = (n_rows + n_threads - 1) / n_threads;
-
-    // Use Mutex to collect errors from threads without adding a new crate
-    let thread_error: std::sync::Mutex<Option<PolarsError>> = std::sync::Mutex::new(None);
-
-    {
-        let chunks: Vec<&mut [u32]> = flat_counts.chunks_mut(rows_per_thread * n_bins).collect();
-
-        std::thread::scope(|scope| {
-            for (thread_idx, output_chunk) in chunks.into_iter().enumerate() {
-                let start_row = thread_idx * rows_per_thread;
-                let end_row = (start_row + rows_per_thread).min(n_rows);
-                let err_ref = &thread_error;
-
-                // 64 KB stack: scratch bufs need <2 KB; default 8 MB wastes mmap time
-                std::thread::Builder::new()
-                    .stack_size(65536)
-                    .spawn_scoped(scope, move || {
-                    // Per-thread scratch buffers (4-buffer scatter-add)
-                    let mut s0 = vec![0u32; n_bins];
-                    let mut s1 = vec![0u32; n_bins];
-                    let mut s2 = vec![0u32; n_bins];
-                    let mut s3 = vec![0u32; n_bins];
-                    // values_cache used only for the rare has_non_finite fallback path
-                    let mut values_cache = Vec::<f64>::new();
-
-                    for i in start_row..end_row {
-                        let out_offset = (i - start_row) * n_bins;
-                        let out_slice = &mut output_chunk[out_offset..out_offset + n_bins];
-
-                        if let Some((offsets, values_flat)) = direct_data {
-                            // Direct Arrow buffer path: zero-copy slice into flat values buffer.
-                            let start = offsets[i] as usize;
-                            let end = offsets[i + 1] as usize;
-                            let slice = &values_flat[start..end];
-
-                            // Pass 1: find min/max. NaN propagates; detected via is_finite() below.
-                            let (min_val, max_val) = {
-                                let mut lo = f64::INFINITY;
-                                let mut hi = f64::NEG_INFINITY;
-                                for &v in slice {
-                                    if v < lo { lo = v; }
-                                    if v > hi { hi = v; }
-                                }
-                                (lo, hi)
-                            };
-                            // If any element was NaN or ±Inf, min/max reflects it.
-                            let has_non_finite = !min_val.is_finite() || !max_val.is_finite();
-
-                            if min_val > max_val {
-                                out_slice.fill(0);
-                                continue;
-                            }
-                            let (first, last) = if min_val == max_val {
-                                (min_val - 0.5, min_val + 0.5)
-                            } else {
-                                (min_val, max_val)
-                            };
-
-                            if !has_non_finite {
-                                // All finite: scatter-add directly on original slice.
-                                // Eliminates 8KB write (to values_cache) + 8KB read per row.
-                                count_into_bins_uniform_slice_4buf(
-                                    slice, n_bins, first, last,
-                                    &mut s0, &mut s1, &mut s2, &mut s3,
-                                );
-                            } else {
-                                // Rare path: filter into cache, then scatter-add
-                                values_cache.clear();
-                                values_cache.extend(slice.iter().copied().filter(|v| v.is_finite()));
-                                count_into_bins_uniform_slice_4buf(
-                                    &values_cache, n_bins, first, last,
-                                    &mut s0, &mut s1, &mut s2, &mut s3,
-                                );
-                            }
-                            out_slice.copy_from_slice(&s0);
-                        } else {
-                            // Fallback: Polars API path (handles multi-chunk, non-f64, nullable values)
+    if let Some((offsets, values_flat)) = direct_data {
+        // Spinning pool: zero pthread_create overhead — workers spin between calls
+        dispatch_spin_pool(offsets, values_flat, n_rows, n_bins, &mut flat_counts);
+    } else {
+        // Fallback: Polars API path via fresh std::thread::scope
+        // (handles multi-chunk, non-f64, or nullable ListChunked)
+        let n_cpus = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
+        let n_threads = (n_cpus * 13 / 4).max(1).min(n_rows);
+        let rows_per_thread = (n_rows + n_threads - 1) / n_threads;
+        let thread_error: std::sync::Mutex<Option<PolarsError>> = std::sync::Mutex::new(None);
+        {
+            let chunks: Vec<&mut [u32]> = flat_counts.chunks_mut(rows_per_thread * n_bins).collect();
+            std::thread::scope(|scope| {
+                for (thread_idx, output_chunk) in chunks.into_iter().enumerate() {
+                    let start_row = thread_idx * rows_per_thread;
+                    let end_row = (start_row + rows_per_thread).min(n_rows);
+                    let err_ref = &thread_error;
+                    scope.spawn(move || {
+                        let mut s0 = vec![0u32; n_bins];
+                        let mut s1 = vec![0u32; n_bins];
+                        let mut s2 = vec![0u32; n_bins];
+                        let mut s3 = vec![0u32; n_bins];
+                        let mut values_cache = Vec::<f64>::new();
+                        for i in start_row..end_row {
+                            let out_offset = (i - start_row) * n_bins;
+                            let out_slice = &mut output_chunk[out_offset..out_offset + n_bins];
                             let row_series = match list_chunked.get_as_series(i) {
                                 None => { out_slice.fill(0); continue; }
                                 Some(s) => s,
@@ -494,15 +602,13 @@ fn bins_int_parallel_flat(
                             );
                             out_slice.copy_from_slice(&s0);
                         }
-                    }
-                    }).unwrap(); // spawn_scoped returns Result
-            }
-        });
-    }
-
-    // Propagate any thread error
-    if let Some(e) = thread_error.into_inner().unwrap() {
-        return Err(e);
+                    });
+                }
+            });
+        }
+        if let Some(e) = thread_error.into_inner().unwrap() {
+            return Err(e);
+        }
     }
 
     // Build LargeListArray directly from flat buffer — O(n_rows) offset construction
