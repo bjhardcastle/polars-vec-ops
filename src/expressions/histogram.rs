@@ -355,9 +355,9 @@ fn bins_int_parallel_flat(
     // Single flat output buffer — no per-thread duplication
     let mut flat_counts = vec![0u32; n_rows * n_bins];
 
-    // 2.75× oversubscription: explore lower thread count for lower-bandwidth host
+    // 4× oversubscription: test on lower-bandwidth host (7.6 GB/s vs 15 GB/s prev session)
     let n_cpus = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
-    let n_threads = (n_cpus * 11 / 4).max(1).min(n_rows);
+    let n_threads = (n_cpus * 4).max(1).min(n_rows);
 
     let rows_per_thread = (n_rows + n_threads - 1) / n_threads;
 
