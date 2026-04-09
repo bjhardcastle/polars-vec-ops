@@ -224,14 +224,16 @@ fn count_into_bins_uniform_slice(
     }
 }
 
-/// Count values into uniformly-spaced bins using two-loop approach:
-/// Loop 1 computes all bin indices into a stack buffer (no scatter dependency — LLVM can
-/// auto-vectorize with AVX-512 vcvttpd2udq + vpminud), loop 2 scatter-adds using 4
-/// independent buffers to break RAW dependency chains.
-/// Unsafe bounds elimination in loop 2 removes 2 cmp+jae per quad.
+/// Count values into uniformly-spaced bins using a fused single-pass approach:
+/// Compute bin index and scatter-add in a single loop, processing 4 elements at a time
+/// with 4 independent scatter buffers to break RAW dependency chains.
+///
+/// The two-loop design with idx_buf was optimized for AVX-512 vectorization of the
+/// index-computation step. Without AVX-512, the intermediate 4KB idx_buf write/read
+/// is pure overhead. This fused version eliminates it.
 ///
 /// Caller must ensure s0/s1/s2/s3 all have capacity >= n_bins (they are resized here).
-/// SAFETY: values must all be finite and in [first, last] for to_int_unchecked.
+/// SAFETY: values must all be finite and in [first, last].
 fn count_into_bins_uniform_slice_4buf(
     values: &[f64],
     n_bins: usize,
@@ -254,53 +256,33 @@ fn count_into_bins_uniform_slice_4buf(
         return;
     }
     let inv_step = n_bins as f64 / range;
-    let nb = (n_bins - 1) as u32;
-
-    // Two-loop design: index computation (loop 1, vectorizable) then scatter (loop 2).
-    // Chunk size keeps idx_buf hot in L1 cache (4KB for CHUNK=1024).
-    const CHUNK: usize = 1024;
-    let mut idx_buf = [0u32; CHUNK];
+    let nb = n_bins - 1;
 
     let s0 = s0.as_mut_slice();
     let s1 = s1.as_mut_slice();
     let s2 = s2.as_mut_slice();
     let s3 = s3.as_mut_slice();
 
-    let mut offset = 0;
-    while offset < values.len() {
-        let end = (offset + CHUNK).min(values.len());
-        let chunk = &values[offset..end];
-        let len = chunk.len();
-
-        // Loop 1: f64 → bin index, no inter-iteration dependency.
-        // SAFETY: values are finite and in [first, last], so the f64 result
-        // of (v - first) * inv_step is in [0.0, n_bins], safe for to_int_unchecked::<u32>.
-        for (idx, &v) in idx_buf[..len].iter_mut().zip(chunk.iter()) {
-            let raw = unsafe { ((v - first) * inv_step).to_int_unchecked::<u32>() };
-            *idx = raw.min(nb);
+    // Fused 4x unroll: compute index and scatter-add without intermediate idx_buf.
+    // 4 independent scatter buffers break RAW dependency chains for ILP.
+    // SAFETY: b0..b3 are .min(nb) ≤ nb = n_bins-1 < s0..s3.len()
+    let quads = values.chunks_exact(4);
+    let rem = quads.remainder();
+    for quad in quads {
+        let b0 = (unsafe { ((quad[0] - first) * inv_step).to_int_unchecked::<u32>() } as usize).min(nb);
+        let b1 = (unsafe { ((quad[1] - first) * inv_step).to_int_unchecked::<u32>() } as usize).min(nb);
+        let b2 = (unsafe { ((quad[2] - first) * inv_step).to_int_unchecked::<u32>() } as usize).min(nb);
+        let b3 = (unsafe { ((quad[3] - first) * inv_step).to_int_unchecked::<u32>() } as usize).min(nb);
+        unsafe {
+            *s0.get_unchecked_mut(b0) += 1;
+            *s1.get_unchecked_mut(b1) += 1;
+            *s2.get_unchecked_mut(b2) += 1;
+            *s3.get_unchecked_mut(b3) += 1;
         }
-
-        // Loop 2: scatter-add, 4-buffer ILP.
-        // SAFETY: all idx values <= nb < n_bins == s0/s1/s2/s3.len()
-        let quads = idx_buf[..len].chunks_exact(4);
-        let rem = quads.remainder();
-        for quad in quads {
-            let b0 = quad[0] as usize;
-            let b1 = quad[1] as usize;
-            let b2 = quad[2] as usize;
-            let b3 = quad[3] as usize;
-            unsafe {
-                *s0.get_unchecked_mut(b0) += 1;
-                *s1.get_unchecked_mut(b1) += 1;
-                *s2.get_unchecked_mut(b2) += 1;
-                *s3.get_unchecked_mut(b3) += 1;
-            }
-        }
-        for &bin in rem {
-            unsafe { *s0.get_unchecked_mut(bin as usize) += 1; }
-        }
-
-        offset = end;
+    }
+    for &v in rem {
+        let b = (unsafe { ((v - first) * inv_step).to_int_unchecked::<u32>() } as usize).min(nb);
+        unsafe { *s0.get_unchecked_mut(b) += 1; }
     }
 
     // Merge s1/s2/s3 into s0
