@@ -352,8 +352,16 @@ fn bins_int_parallel_flat(
         Some((&list_arr.offsets()[..], prim.values().as_slice()))
     };
 
-    // Single flat output buffer — no per-thread duplication
-    let mut flat_counts = vec![0u32; n_rows * n_bins];
+    // Single flat output buffer — no per-thread duplication.
+    // Use MaybeUninit to skip zero-init: every code path writes all n_bins elements
+    // (via copy_from_slice or fill) before any read, so the uninit is sound.
+    let mut flat_counts: Vec<u32> = {
+        let mut v: Vec<u32> = Vec::with_capacity(n_rows * n_bins);
+        // SAFETY: u32 is Copy/no-drop. Every thread slice is fully overwritten by
+        // copy_from_slice(&s0) or fill(0) before it is read.
+        unsafe { v.set_len(n_rows * n_bins); }
+        v
+    };
 
     // 3.25× oversubscription: explore between 3x (62ms best) and 3.5x (55ms best)
     let n_cpus = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
