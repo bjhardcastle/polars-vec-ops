@@ -352,31 +352,33 @@ fn bins_int_parallel_flat(
         Some((&list_arr.offsets()[..], prim.values().as_slice()))
     };
 
+    use rayon::prelude::*;
+
     // Single flat output buffer — no per-thread duplication
     let mut flat_counts = vec![0u32; n_rows * n_bins];
 
-    // 4× oversubscription: more concurrent DRAM streams → higher effective bandwidth
-    let n_threads = (std::thread::available_parallelism()
+    // 4× oversubscription: 64 tasks on Rayon's pool (default: available_parallelism threads).
+    // Rayon work-steals tasks, reusing the persistent thread pool — no per-call OS thread creation.
+    let n_tasks = (std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(4) * 4)
         .min(n_rows);
+    let rows_per_task = (n_rows + n_tasks - 1) / n_tasks;
 
-    let rows_per_thread = (n_rows + n_threads - 1) / n_threads;
-
-    // Use Mutex to collect errors from threads without adding a new crate
-    let thread_error: std::sync::Mutex<Option<PolarsError>> = std::sync::Mutex::new(None);
+    // Use Mutex to collect errors from tasks
+    let task_error: std::sync::Mutex<Option<PolarsError>> = std::sync::Mutex::new(None);
 
     {
-        let chunks: Vec<&mut [u32]> = flat_counts.chunks_mut(rows_per_thread * n_bins).collect();
+        let task_error_ref = &task_error;
 
-        std::thread::scope(|scope| {
-            for (thread_idx, output_chunk) in chunks.into_iter().enumerate() {
-                let start_row = thread_idx * rows_per_thread;
-                let end_row = (start_row + rows_per_thread).min(n_rows);
-                let err_ref = &thread_error;
+        rayon::scope(|scope| {
+            let chunks: Vec<&mut [u32]> = flat_counts.chunks_mut(rows_per_task * n_bins).collect();
+            for (task_idx, output_chunk) in chunks.into_iter().enumerate() {
+                let start_row = task_idx * rows_per_task;
+                let end_row = (start_row + rows_per_task).min(n_rows);
 
-                scope.spawn(move || {
-                    // Per-thread scratch buffers (4-buffer scatter-add)
+                scope.spawn(move |_| {
+                    // Per-task scratch buffers (4-buffer scatter-add)
                     let mut s0 = vec![0u32; n_bins];
                     let mut s1 = vec![0u32; n_bins];
                     let mut s2 = vec![0u32; n_bins];
@@ -419,7 +421,6 @@ fn bins_int_parallel_flat(
 
                             if !has_non_finite {
                                 // All finite: scatter-add directly on original slice.
-                                // Eliminates 8KB write (to values_cache) + 8KB read per row.
                                 count_into_bins_uniform_slice_4buf(
                                     slice, n_bins, first, last,
                                     &mut s0, &mut s1, &mut s2, &mut s3,
@@ -443,7 +444,7 @@ fn bins_int_parallel_flat(
                             let row_f64 = match row_series.cast(&DataType::Float64) {
                                 Ok(s) => s,
                                 Err(e) => {
-                                    let mut g = err_ref.lock().unwrap();
+                                    let mut g = task_error_ref.lock().unwrap();
                                     if g.is_none() { *g = Some(e); }
                                     return;
                                 }
@@ -451,7 +452,7 @@ fn bins_int_parallel_flat(
                             let ca = match row_f64.f64() {
                                 Ok(ca) => ca,
                                 Err(e) => {
-                                    let mut g = err_ref.lock().unwrap();
+                                    let mut g = task_error_ref.lock().unwrap();
                                     if g.is_none() { *g = Some(e.into()); }
                                     return;
                                 }
@@ -499,8 +500,8 @@ fn bins_int_parallel_flat(
         });
     }
 
-    // Propagate any thread error
-    if let Some(e) = thread_error.into_inner().unwrap() {
+    // Propagate any task error
+    if let Some(e) = task_error.into_inner().unwrap() {
         return Err(e);
     }
 
