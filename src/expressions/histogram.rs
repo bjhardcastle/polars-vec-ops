@@ -285,9 +285,68 @@ fn count_into_bins_uniform_slice_4buf(
         unsafe { *s0.get_unchecked_mut(b) += 1; }
     }
 
-    // Merge s1/s2/s3 into s0
+    // Merge s1/s2/s3 into s0 (caller then copies s0 → out_slice)
     for i in 0..n_bins {
         s0[i] += s1[i] + s2[i] + s3[i];
+    }
+}
+
+/// Like count_into_bins_uniform_slice_4buf but writes final result directly to `out`,
+/// eliminating the intermediate s0 reduction + copy_from_slice.
+fn count_into_bins_uniform_into(
+    values: &[f64],
+    n_bins: usize,
+    first: f64,
+    last: f64,
+    s0: &mut Vec<u32>,
+    s1: &mut Vec<u32>,
+    s2: &mut Vec<u32>,
+    s3: &mut Vec<u32>,
+    out: &mut [u32],
+) {
+    s0.clear(); s0.resize(n_bins, 0);
+    s1.clear(); s1.resize(n_bins, 0);
+    s2.clear(); s2.resize(n_bins, 0);
+    s3.clear(); s3.resize(n_bins, 0);
+    if n_bins == 0 || values.is_empty() {
+        out.fill(0);
+        return;
+    }
+    let range = last - first;
+    if range <= 0.0 {
+        out.fill(0);
+        return;
+    }
+    let inv_step = n_bins as f64 / range;
+    let nb = n_bins - 1;
+
+    let s0s = s0.as_mut_slice();
+    let s1s = s1.as_mut_slice();
+    let s2s = s2.as_mut_slice();
+    let s3s = s3.as_mut_slice();
+
+    let quads = values.chunks_exact(4);
+    let rem = quads.remainder();
+    for quad in quads {
+        let b0 = (unsafe { ((quad[0] - first) * inv_step).to_int_unchecked::<u32>() } as usize).min(nb);
+        let b1 = (unsafe { ((quad[1] - first) * inv_step).to_int_unchecked::<u32>() } as usize).min(nb);
+        let b2 = (unsafe { ((quad[2] - first) * inv_step).to_int_unchecked::<u32>() } as usize).min(nb);
+        let b3 = (unsafe { ((quad[3] - first) * inv_step).to_int_unchecked::<u32>() } as usize).min(nb);
+        unsafe {
+            *s0s.get_unchecked_mut(b0) += 1;
+            *s1s.get_unchecked_mut(b1) += 1;
+            *s2s.get_unchecked_mut(b2) += 1;
+            *s3s.get_unchecked_mut(b3) += 1;
+        }
+    }
+    for &v in rem {
+        let b = (unsafe { ((v - first) * inv_step).to_int_unchecked::<u32>() } as usize).min(nb);
+        unsafe { *s0s.get_unchecked_mut(b) += 1; }
+    }
+
+    // Write sum directly to output (skip write-back to s0, skip copy_from_slice)
+    for i in 0..n_bins {
+        unsafe { *out.get_unchecked_mut(i) = *s0s.get_unchecked(i) + *s1s.get_unchecked(i) + *s2s.get_unchecked(i) + *s3s.get_unchecked(i); }
     }
 }
 
@@ -373,10 +432,7 @@ fn bins_int_parallel_flat(
                 let end_row = (start_row + rows_per_thread).min(n_rows);
                 let err_ref = &thread_error;
 
-                // 64 KB stack: scratch bufs need <2 KB; default 8 MB wastes mmap time
-                std::thread::Builder::new()
-                    .stack_size(65536)
-                    .spawn_scoped(scope, move || {
+                scope.spawn(move || {
                     // Per-thread scratch buffers (4-buffer scatter-add)
                     let mut s0 = vec![0u32; n_bins];
                     let mut s1 = vec![0u32; n_bins];
@@ -421,20 +477,22 @@ fn bins_int_parallel_flat(
                             if !has_non_finite {
                                 // All finite: scatter-add directly on original slice.
                                 // Eliminates 8KB write (to values_cache) + 8KB read per row.
-                                count_into_bins_uniform_slice_4buf(
+                                // Direct-write to out_slice skips intermediate s0 merge + copy.
+                                count_into_bins_uniform_into(
                                     slice, n_bins, first, last,
                                     &mut s0, &mut s1, &mut s2, &mut s3,
+                                    out_slice,
                                 );
                             } else {
                                 // Rare path: filter into cache, then scatter-add
                                 values_cache.clear();
                                 values_cache.extend(slice.iter().copied().filter(|v| v.is_finite()));
-                                count_into_bins_uniform_slice_4buf(
+                                count_into_bins_uniform_into(
                                     &values_cache, n_bins, first, last,
                                     &mut s0, &mut s1, &mut s2, &mut s3,
+                                    out_slice,
                                 );
                             }
-                            out_slice.copy_from_slice(&s0);
                         } else {
                             // Fallback: Polars API path (handles multi-chunk, non-f64, nullable values)
                             let row_series = match list_chunked.get_as_series(i) {
@@ -488,14 +546,14 @@ fn bins_int_parallel_flat(
                             } else {
                                 (min_val, max_val)
                             };
-                            count_into_bins_uniform_slice_4buf(
+                            count_into_bins_uniform_into(
                                 &values_cache, n_bins, first, last,
                                 &mut s0, &mut s1, &mut s2, &mut s3,
+                                out_slice,
                             );
-                            out_slice.copy_from_slice(&s0);
                         }
                     }
-                    }).unwrap(); // spawn_scoped returns Result
+                });
             }
         });
     }
