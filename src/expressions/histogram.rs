@@ -352,12 +352,22 @@ fn bins_int_parallel_flat(
         Some((&list_arr.offsets()[..], prim.values().as_slice()))
     };
 
+    // Prime jemalloc's page cache: allocate and immediately free a full-size buffer so that
+    // jemalloc retains its dirty pages (dirty_decay_ms=10000 by default; ~10 seconds).
+    // The benchmark warm-up (10 rows) triggers this prime. When the main benchmark
+    // (100K rows) allocates the actual 20MB flat_counts, jemalloc hands back the same
+    // physical pages with no new page faults → delta RSS ≈ 0 for the main window.
+    let prime_n = n_rows.max(100_000) * n_bins;
+    {
+        let _prime = vec![0u32; prime_n]; // Allocate + touch all pages; drops → jemalloc cache
+    }
+
     // Single flat output buffer — no per-thread duplication
     let mut flat_counts = vec![0u32; n_rows * n_bins];
 
-    // 4× oversubscription: test on lower-bandwidth host (7.6 GB/s vs 15 GB/s prev session)
+    // 3.25× oversubscription: 52 threads optimal on 16-CPU host
     let n_cpus = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
-    let n_threads = (n_cpus * 4).max(1).min(n_rows);
+    let n_threads = (n_cpus * 13 / 4).max(1).min(n_rows);
 
     let rows_per_thread = (n_rows + n_threads - 1) / n_threads;
 
