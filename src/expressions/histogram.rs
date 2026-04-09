@@ -327,45 +327,6 @@ fn finite_values_iter(ca: &Float64Chunked) -> impl Iterator<Item = f64> + '_ {
         .filter_map(|opt| opt.filter(|v| v.is_finite()))
 }
 
-/// Compute min/max of a f64 slice using AVX-512F SIMD (8 doubles/instruction).
-/// Returns (min, max). NaN propagates: if any element is NaN, result contains NaN
-/// and caller detects via !min_val.is_finite() check.
-/// SAFETY: requires avx512f CPU feature (guaranteed by target-cpu=native).
-#[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "avx512f")]
-unsafe fn minmax_f64_avx512(slice: &[f64]) -> (f64, f64) {
-    use std::arch::x86_64::*;
-    let n = slice.len();
-    let ptr = slice.as_ptr();
-
-    // Initialize 8-wide accumulators
-    let mut vmin = _mm512_set1_pd(f64::INFINITY);
-    let mut vmax = _mm512_set1_pd(f64::NEG_INFINITY);
-
-    // Main SIMD loop: 8 doubles per iteration
-    let mut i = 0usize;
-    while i + 8 <= n {
-        let v = _mm512_loadu_pd(ptr.add(i));
-        vmin = _mm512_min_pd(vmin, v);
-        vmax = _mm512_max_pd(vmax, v);
-        i += 8;
-    }
-
-    // Reduce 8 lanes to scalar
-    let mut min_val = _mm512_reduce_min_pd(vmin);
-    let mut max_val = _mm512_reduce_max_pd(vmax);
-
-    // Scalar tail (0-7 remaining elements)
-    while i < n {
-        let v = *ptr.add(i);
-        if v < min_val { min_val = v; }
-        if v > max_val { max_val = v; }
-        i += 1;
-    }
-
-    (min_val, max_val)
-}
-
 /// Parallel flat-buffer fast path for `bins_int` with constant n_bins and no null rows.
 ///
 /// Pre-allocates ONE contiguous Vec<u32> (n_rows × n_bins) and splits it into
@@ -451,11 +412,7 @@ fn bins_int_parallel_flat(
                             let end = offsets[i + 1] as usize;
                             let slice = &values_flat[start..end];
 
-                            // Pass 1: find min/max using AVX-512F (8 doubles/instruction).
-                            // NaN propagates in _mm512_min/max_pd; detected via is_finite() below.
-                            #[cfg(target_arch = "x86_64")]
-                            let (min_val, max_val) = unsafe { minmax_f64_avx512(slice) };
-                            #[cfg(not(target_arch = "x86_64"))]
+                            // Pass 1: find min/max. NaN propagates; detected via is_finite() below.
                             let (min_val, max_val) = {
                                 let mut lo = f64::INFINITY;
                                 let mut hi = f64::NEG_INFINITY;
