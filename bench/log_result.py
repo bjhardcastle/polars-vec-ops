@@ -28,7 +28,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-RESULTS_TSV = Path(__file__).parent.parent / "results.tsv"
+RESULTS_TSV = Path(__file__).parent / "results.tsv"
 
 
 def get_commit() -> str:

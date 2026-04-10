@@ -10,8 +10,8 @@ from pathlib import Path
 import altair as alt
 import pandas as pd
 
-RESULTS_TSV = Path(__file__).parent.parent / "results.tsv"
-OUTPUT_HTML = Path(__file__).parent.parent / "results.html"
+RESULTS_TSV = Path(__file__).parent / "results.tsv"
+OUTPUT_HTML = Path(__file__).parent / "results.html"
 
 df = pd.read_csv(RESULTS_TSV, sep="\t")
 df = df.reset_index().rename(columns={"index": "experiment"})
