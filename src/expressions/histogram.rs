@@ -167,63 +167,6 @@ fn count_into_bins_uniform(values: impl Iterator<Item = f64>, edges: &[f64], scr
     }
 }
 
-/// Count values into uniformly-spaced bins without requiring a pre-built edges Vec.
-/// Takes first/last edge and n_bins directly — avoids heap allocation for edges.
-/// Semantics identical to count_into_bins_uniform.
-fn count_into_bins_uniform_direct(
-    values: impl Iterator<Item = f64>,
-    n_bins: usize,
-    first: f64,
-    last: f64,
-    scratch: &mut Vec<u32>,
-) {
-    scratch.clear();
-    scratch.resize(n_bins, 0);
-    if n_bins == 0 {
-        return;
-    }
-    let range = last - first;
-    if range <= 0.0 {
-        return;
-    }
-    let inv_step = n_bins as f64 / range;
-    for v in values {
-        if v < first || v > last || !v.is_finite() {
-            continue;
-        }
-        let bin = ((v - first) * inv_step) as usize;
-        let bin = bin.min(n_bins - 1);
-        scratch[bin] += 1;
-    }
-}
-
-/// Count values from a pre-collected slice into uniformly-spaced bins.
-/// Values are already finite (caller filters); no further filtering needed.
-/// This variant avoids a second Polars ChunkedArray pass by operating on a cached Vec<f64>.
-fn count_into_bins_uniform_slice(
-    values: &[f64],
-    n_bins: usize,
-    first: f64,
-    last: f64,
-    scratch: &mut Vec<u32>,
-) {
-    scratch.clear();
-    scratch.resize(n_bins, 0);
-    if n_bins == 0 || values.is_empty() {
-        return;
-    }
-    let range = last - first;
-    if range <= 0.0 {
-        return;
-    }
-    let inv_step = n_bins as f64 / range;
-    for &v in values {
-        let bin = ((v - first) * inv_step) as usize;
-        let bin = bin.min(n_bins - 1);
-        scratch[bin] += 1;
-    }
-}
-
 /// Count values into uniformly-spaced bins using a fused single-pass approach:
 /// Compute bin index and scatter-add in a single loop, processing 4 elements at a time
 /// with 4 independent scatter buffers to break RAW dependency chains.
@@ -294,13 +237,6 @@ fn count_into_bins_uniform_slice_4buf(
 /// Validate that the number of bins doesn't exceed the safety limit.
 fn validate_bin_count(_edges: &[f64]) -> PolarsResult<()> {
     Ok(())
-}
-
-/// Convert u32 counts to a Series.
-/// Always returns UInt32 to match the declared output schema.
-/// Dtype conversion is handled in the Python wrapper.
-fn counts_to_series(counts: &[u32]) -> Series {
-    Series::new("".into(), counts)
 }
 
 /// Helper to create a finite-value iterator from a Float64Chunked.
