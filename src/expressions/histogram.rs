@@ -177,6 +177,7 @@ fn count_into_bins_uniform(values: impl Iterator<Item = f64>, edges: &[f64], scr
 ///
 /// Caller must ensure s0/s1/s2/s3 all have capacity >= n_bins (they are resized here).
 /// SAFETY: values must all be finite and in [first, last].
+#[allow(clippy::too_many_arguments)]
 fn count_into_bins_uniform_slice_4buf(
     values: &[f64],
     n_bins: usize,
@@ -339,7 +340,7 @@ fn bins_int_parallel_flat(
     let n_cpus = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
     let n_threads = (n_cpus * 13 / 4).max(1).min(n_rows);
 
-    let rows_per_thread = (n_rows + n_threads - 1) / n_threads;
+    let rows_per_thread = n_rows.div_ceil(n_threads);
 
     // Use Mutex to collect errors from threads without adding a new crate
     let thread_error: std::sync::Mutex<Option<PolarsError>> = std::sync::Mutex::new(None);
@@ -430,7 +431,7 @@ fn bins_int_parallel_flat(
                                 Ok(ca) => ca,
                                 Err(e) => {
                                     let mut g = err_ref.lock().unwrap();
-                                    if g.is_none() { *g = Some(e.into()); }
+                                    if g.is_none() { *g = Some(e); }
                                     return;
                                 }
                             };
@@ -656,7 +657,7 @@ fn list_histogram_bins_int_fast(inputs: &[Series], kwargs: BinsIntFastKwargs) ->
     // -- Parallel scatter-add (same as bins_int_parallel_flat) --
     let n_cpus = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
     let n_threads = (n_cpus * 13 / 4).max(1).min(n_rows);
-    let rows_per_thread = (n_rows + n_threads - 1) / n_threads;
+    let rows_per_thread = n_rows.div_ceil(n_threads);
 
     let thread_error: std::sync::Mutex<Option<PolarsError>> = std::sync::Mutex::new(None);
     {
@@ -718,7 +719,7 @@ fn list_histogram_bins_int_fast(inputs: &[Series], kwargs: BinsIntFastKwargs) ->
                                 Ok(ca) => ca,
                                 Err(e) => {
                                     let mut g = err_ref.lock().unwrap();
-                                    if g.is_none() { *g = Some(e.into()); }
+                                    if g.is_none() { *g = Some(e); }
                                     return;
                                 }
                             };
@@ -821,7 +822,7 @@ fn list_histogram(inputs: &[Series], kwargs: HistogramKwargs) -> PolarsResult<Se
     if mode == "bins_int"
         && !include_breakpoints
         && kwargs.bins_int.is_some()
-        && kwargs.arg_positions.get("bins_int").is_none()
+        && !kwargs.arg_positions.contains_key("bins_int")
         && list_chunked.null_count() == 0
     {
         let n_bins = kwargs.bins_int.unwrap() as usize;
@@ -857,7 +858,7 @@ fn list_histogram(inputs: &[Series], kwargs: HistogramKwargs) -> PolarsResult<Se
 
     // Estimate bins for pre-allocation capacity (doesn't affect correctness)
     let n_bins_hint: usize = match mode {
-        "bins_int" if kwargs.arg_positions.get("bins_int").is_none() => {
+        "bins_int" if !kwargs.arg_positions.contains_key("bins_int") => {
             kwargs.bins_int.unwrap_or(50) as usize
         },
         "edges" => static_edges.as_ref().map(|e| e.len().saturating_sub(1)).unwrap_or(50),
