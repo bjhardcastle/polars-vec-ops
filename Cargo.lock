@@ -1824,7 +1824,7 @@ dependencies = [
 
 [[package]]
 name = "polars-vec-ops"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "polars",
  "polars-arrow",
