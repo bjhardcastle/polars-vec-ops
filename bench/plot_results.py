@@ -1,4 +1,10 @@
 #!/usr/bin/env python3
+# /// script
+# dependencies = [
+#   "altair",
+#   "pandas",
+# ]
+# ///
 """Generate results.html altair plot from results.tsv."""
 from pathlib import Path
 import altair as alt
