@@ -784,7 +784,27 @@ fn list_histogram_bins_int_fast(inputs: &[Series], kwargs: BinsIntFastKwargs) ->
 
     let inner_field = ArrowField::new("item".into(), ArrowDataType::UInt32, true);
     let list_dtype = ArrowDataType::LargeList(Box::new(inner_field));
-    let list_arr = ListArray::<i64>::new(list_dtype, offsets, Box::new(values_arr), None);
+
+    // Apply validity bitmap for null rows in the input
+    let validity = if list_chunked.null_count() > 0 {
+        use polars_arrow::bitmap::MutableBitmap;
+        let mut bm = MutableBitmap::with_capacity(n_rows);
+        for chunk in list_chunked.chunks() {
+            let chunk_len = chunk.len();
+            match chunk.validity() {
+                Some(v) => {
+                    for i in 0..chunk_len {
+                        bm.push(v.get_bit(i));
+                    }
+                }
+                None => bm.extend_constant(chunk_len, true),
+            }
+        }
+        Some(bm.freeze())
+    } else {
+        None
+    };
+    let list_arr = ListArray::<i64>::new(list_dtype, offsets, Box::new(values_arr), validity);
 
     let counts_ca = ListChunked::with_chunk(series.name().clone(), list_arr);
     Ok(counts_ca.into_series())
@@ -945,6 +965,8 @@ fn list_histogram(inputs: &[Series], kwargs: HistogramKwargs) -> PolarsResult<Se
                             if v < min_val { min_val = v; }
                             if v > max_val { max_val = v; }
                         }
+                        // When min==max, edges_from_bins_int collapses to 1 bin [v-0.5, v+0.5].
+                        let actual_n_bins = if min_val == max_val { 1 } else { n as usize };
                         let (first, last) = if min_val == max_val {
                             (min_val - 0.5, min_val + 0.5)
                         } else {
@@ -954,7 +976,7 @@ fn list_histogram(inputs: &[Series], kwargs: HistogramKwargs) -> PolarsResult<Se
                         // to break the load-store dependency chain in the inner loop.
                         count_into_bins_uniform_slice_4buf(
                             &values_cache,
-                            n as usize,
+                            actual_n_bins,
                             first,
                             last,
                             &mut scratch,
