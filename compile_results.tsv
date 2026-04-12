@@ -24,3 +24,4 @@ f7c6dc4	30.0	1.3	53.3	0.050	keep	lto=false: eliminates ThinLTO bottleneck, clean
 67ecba8	32.0	1.4	94.6	0.053	discard	mold+lto=false: no compile gain (32s vs 30s), wall_time regression (median 94.6ms > 87.8ms guard)
 6a53d9f	345.0	N/A	N/A	N/A	discard	opt-level=1 in [profile.release] changes ALL dep flags → sccache fully invalidated (345s cold build), wrong approach
 5ada4c4	30.0	1.3	93.6	0.050	discard	sccache on RAM disk (/dev/shm): no compile improvement, bottleneck is 282 sccache client invocations (~100ms CPU/IPC overhead each)
+3872d84	30.0	1.3	94.0	0.050	discard	opt-level=2 per-package (polars-vec-ops only, no sccache invalidation): polars-vec-ops is cdylib=never cached, compile time same as opt=3
