@@ -126,16 +126,14 @@ class VecOpsNamespace:
                     "ascending order; set check_sortedness=False to skip validation"
                 )
 
-        # ── Cross join ──────────────────────────────────────────────────────
-        joined = df_work.join(other_eager, how="cross")
-
-        joined = joined.with_columns(
+        # ── Evaluate start/stop expressions in other_eager ─────────────────
+        other_with_bounds = other_eager.with_columns(
             start_expr.alias(_TEMP_START),
             stop_expr.alias(_TEMP_STOP),
         )
 
         # ── Determine output dtype ──────────────────────────────────────────
-        start_dtype = joined.schema[_TEMP_START]
+        start_dtype = other_with_bounds.schema[_TEMP_START]
 
         if relative:
             out_inner = (
@@ -147,28 +145,73 @@ class VecOpsNamespace:
 
         return_dtype: pl.PolarsDataType = pl.UInt32 if as_counts else pl.List(out_inner)
 
-        # ── Clip each row via Rust plugin (binary search on Arrow buffers) ──
-        clipped_expr = register_plugin_function(
-            args=[pl.col(_TEMP_VAL), pl.col(_TEMP_START), pl.col(_TEMP_STOP)],
-            plugin_path=_LIB,
-            function_name="list_clip",
-            is_elementwise=True,
-            returns_scalar=False,
-            kwargs={"relative": relative, "as_counts": False},
-        )
+        # ── Unit-loop: process one unit at a time, all intervals per unit ──
+        # This preserves cross-join ordering: unit0×all_intervals, unit1×all_intervals, ...
+        # while avoiding materializing the N×M cross-join DataFrame.
+        #
+        # For each unit row: repeat the single unit row M times (one per interval),
+        # add start/stop columns from other_with_bounds, apply list_clip.
+        # This avoids the huge cross-join memory cost while keeping correct ordering.
+        #
+        # Columns from other_eager (data cols, excluding temp bounds)
+        other_data_cols = [c for c in other_with_bounds.columns if c not in (_TEMP_START, _TEMP_STOP)]
+        n_intervals = len(other_with_bounds)
+        n_units = len(df_work)
 
-        # Post-process: convert to counts or cast to correct output dtype
-        if as_counts:
-            clipped_expr = clipped_expr.list.len().cast(pl.UInt32)
-        elif return_dtype != pl.List(pl.Float64):
-            # Cast List(Float64) back to List(out_inner) for integer dtypes
-            clipped_expr = clipped_expr.cast(return_dtype)
+        # Pre-extract start/stop arrays for efficiency
+        starts = other_with_bounds[_TEMP_START]
+        stops = other_with_bounds[_TEMP_STOP]
 
-        result = (
-            joined
-            .with_columns(clipped_expr.alias(val_col_name))
-            .drop([_TEMP_VAL, _TEMP_START, _TEMP_STOP])
-        )
+        # Pre-extract other data columns as a DataFrame (already ordered by interval)
+        other_data = other_with_bounds.select(other_data_cols) if other_data_cols else None
+
+        # Build the Rust plugin expression (applied after column setup)
+        def _make_clipped_expr() -> pl.Expr:
+            clipped_expr = register_plugin_function(
+                args=[pl.col(_TEMP_VAL), pl.col(_TEMP_START), pl.col(_TEMP_STOP)],
+                plugin_path=_LIB,
+                function_name="list_clip",
+                is_elementwise=True,
+                returns_scalar=False,
+                kwargs={"relative": relative, "as_counts": False},
+            )
+            if as_counts:
+                clipped_expr = clipped_expr.list.len().cast(pl.UInt32)
+            elif return_dtype != pl.List(pl.Float64):
+                clipped_expr = clipped_expr.cast(return_dtype)
+            return clipped_expr
+
+        clipped_expr = _make_clipped_expr()
+
+        chunks = []
+        for i in range(n_units):
+            # Get this unit's row repeated N_intervals times
+            unit_row = df_work[i]  # 1-row DataFrame
+            # Tile the unit row n_intervals times using concat
+            unit_tiled = pl.concat([unit_row] * n_intervals)
+
+            # Add start/stop columns from intervals
+            unit_tiled = unit_tiled.with_columns([
+                starts.alias(_TEMP_START),
+                stops.alias(_TEMP_STOP),
+            ])
+
+            # Apply Rust list_clip
+            unit_result = unit_tiled.with_columns(clipped_expr.alias(val_col_name))
+            unit_result = unit_result.drop([_TEMP_VAL, _TEMP_START, _TEMP_STOP])
+
+            # Add other data columns from intervals
+            if other_data is not None:
+                unit_result = pl.concat([unit_result, other_data], how="horizontal")
+
+            chunks.append(unit_result)
+
+        if not chunks:
+            # Return empty DataFrame with correct schema
+            empty = df_work.head(0).drop([_TEMP_VAL])
+            result = empty
+        else:
+            result = pl.concat(chunks)
 
         if is_lazy:
             return result.lazy()
