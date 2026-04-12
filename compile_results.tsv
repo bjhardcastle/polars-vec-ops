@@ -5,3 +5,4 @@ c39c228	363.7	73.8	84.8	1.022	discard	mold linker (v1.0.3) + clang + target-cpu=
 6dada06	105.8	73.7	64.8	1.042	discard	sccache+mold: mold adds overhead, worse than sccache-only
 11101ef	99.9	70.8	100.1	0.636	discard	strip=debuginfo: compile slightly better (+0.6%) but wall_time 100ms>86ms (16% regression, high noise)
 a31d5a2	96.5	67.9	85.2	0.610	keep	stable toolchain (1.94.1): clean -4.2%, incremental -4.8% vs nightly (warm sccache)
+a483dd6	111.5	81.3	59.2	0.725	discard	codegen-units=16: link overhead dominates, both metrics worse
