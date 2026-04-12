@@ -4,3 +4,5 @@ commit	pl_time	pl_mem_mb	np_time	speedup	match	fitness	status	description
 b41d65f	0.2085	0.0	0.0021	0.0100	false	-	discard	interval-loop (wrong output ordering, match=false)
 4d56e32	0.0796	19.3	0.0021	0.0259	true	5.310	discard	unit-loop (correct order but high memory, concat tiles)
 8f302e8	0.0549	0.0	0.0021	0.0381	true	0.031	keep	cross_clip Rust (no cross-join, Rust does cross-product)
+12c1b0b	0.0546	0.0	0.0021	0.0382	true	0.031	keep	parallel cross_clip with rayon (marginal gain on small n_units)
+40b5452	0.0019	0.0	0.0021	1.0794	true	0.001	keep	avoid gather of large list col (drop before indexing, 646x vs baseline)
