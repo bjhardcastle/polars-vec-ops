@@ -134,11 +134,8 @@ class VecOpsNamespace:
         )
 
         # Extract starts/stops Series for Rust plugin
-        # Skip cast if already Float64 (common case)
-        _s_raw = other_with_bounds[_TEMP_START]
-        starts_series = _s_raw if _s_raw.dtype == pl.Float64 else _s_raw.cast(pl.Float64)
-        _e_raw = other_with_bounds[_TEMP_STOP]
-        stops_series = _e_raw if _e_raw.dtype == pl.Float64 else _e_raw.cast(pl.Float64)
+        starts_series = other_with_bounds[_TEMP_START].cast(pl.Float64)
+        stops_series = other_with_bounds[_TEMP_STOP].cast(pl.Float64)
         n_intervals = len(starts_series)
 
         # ── Determine output dtype ──────────────────────────────────────────
