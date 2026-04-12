@@ -1,10 +1,13 @@
 from __future__ import annotations
 
-import bisect
+from pathlib import Path
 from typing import Any
 
 import polars as pl
 from polars._typing import IntoExpr, IntoExprColumn, FrameType
+from polars.plugins import register_plugin_function
+
+_LIB = Path(__file__).parent
 
 
 @pl.api.register_dataframe_namespace("vec")
@@ -144,38 +147,26 @@ class VecOpsNamespace:
 
         return_dtype: pl.PolarsDataType = pl.UInt32 if as_counts else pl.List(out_inner)
 
-        # ── Clip each row via binary search ─────────────────────────────────
-        _relative  = relative
-        _as_counts = as_counts
+        # ── Clip each row via Rust plugin (binary search on Arrow buffers) ──
+        clipped_expr = register_plugin_function(
+            args=[pl.col(_TEMP_VAL), pl.col(_TEMP_START), pl.col(_TEMP_STOP)],
+            plugin_path=_LIB,
+            function_name="list_clip",
+            is_elementwise=True,
+            returns_scalar=False,
+            kwargs={"relative": relative, "as_counts": False},
+        )
 
-        def _clip(row: dict) -> Any:
-            vals  = row[_TEMP_VAL]
-            start = row[_TEMP_START]
-            stop  = row[_TEMP_STOP]
-
-            if vals is None:
-                return None
-
-            vals_list = vals.to_list() if isinstance(vals, pl.Series) else list(vals)
-
-            lo = bisect.bisect_left(vals_list, start)
-            hi = bisect.bisect_left(vals_list, stop)
-
-            if _as_counts:
-                return hi - lo
-
-            clipped = vals_list[lo:hi]
-            if _relative:
-                clipped = [v - start for v in clipped]
-            return clipped
+        # Post-process: convert to counts or cast to correct output dtype
+        if as_counts:
+            clipped_expr = clipped_expr.list.len().cast(pl.UInt32)
+        elif return_dtype != pl.List(pl.Float64):
+            # Cast List(Float64) back to List(out_inner) for integer dtypes
+            clipped_expr = clipped_expr.cast(return_dtype)
 
         result = (
             joined
-            .with_columns(
-                pl.struct([_TEMP_VAL, _TEMP_START, _TEMP_STOP])
-                .map_elements(_clip, return_dtype=return_dtype)
-                .alias(val_col_name)
-            )
+            .with_columns(clipped_expr.alias(val_col_name))
             .drop([_TEMP_VAL, _TEMP_START, _TEMP_STOP])
         )
 
