@@ -10,3 +10,5 @@ b41d65f	0.2085	0.0	0.0021	0.0100	false	-	discard	interval-loop (wrong output ord
 7fd57ef	0.0013	0.0	0.0020	1.6139	true	0.001	keep	cross_clip_series uses Series inputs instead of kwargs (1.61x faster than numpy)
 612b26c	0.0011	0.0	0.0022	1.9765	true	0.001	keep	parallel over units with abs offsets (1.98x faster than numpy)
 9f2e04d	0.0010	0.0	0.0021	2.0327	true	0.001	keep	Arrow flat buffer output (2.03x faster than numpy)
+364e17b	0.0012	0.0	0.0021	1.7321	true	0.001	discard	pre-alloc flat buffer + sequential fill (slightly slower)
+5ad8718	0.0011	0.0	0.0021	1.8395	true	0.001	discard	avoid other_with_bounds (slightly slower than Arrow flat buffer path)
