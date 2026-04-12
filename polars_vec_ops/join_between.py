@@ -133,10 +133,10 @@ class VecOpsNamespace:
             stop_expr.alias(_TEMP_STOP),
         )
 
-        # Extract starts/stops as Python lists for Rust kwargs
-        starts_list: list[float] = other_with_bounds[_TEMP_START].cast(pl.Float64).to_list()
-        stops_list: list[float] = other_with_bounds[_TEMP_STOP].cast(pl.Float64).to_list()
-        n_intervals = len(starts_list)
+        # Extract starts/stops Series for Rust plugin
+        starts_series = other_with_bounds[_TEMP_START].cast(pl.Float64)
+        stops_series = other_with_bounds[_TEMP_STOP].cast(pl.Float64)
+        n_intervals = len(starts_series)
 
         # ── Determine output dtype ──────────────────────────────────────────
         start_dtype = other_with_bounds.schema[_TEMP_START]
@@ -151,22 +151,17 @@ class VecOpsNamespace:
 
         return_dtype: pl.PolarsDataType = pl.UInt32 if as_counts else pl.List(out_inner)
 
-        # ── Call cross_clip Rust plugin (no cross-join!) ──────────────────────
-        # cross_clip takes the values column (n_units rows) and produces
-        # n_units × n_intervals rows. No cross-join needed.
+        # ── Call cross_clip_series Rust plugin (no cross-join!) ───────────────
+        # Passes starts/stops as Series inputs (avoids kwargs serialization overhead).
+        # Takes values column (n_units rows) + starts + stops Series.
+        # Produces n_units × n_intervals rows.
         cross_clip_expr = register_plugin_function(
-            args=[pl.col(_TEMP_VAL)],
+            args=[pl.col(_TEMP_VAL), pl.lit(starts_series), pl.lit(stops_series)],
             plugin_path=_LIB,
-            function_name="cross_clip",
+            function_name="cross_clip_series",
             is_elementwise=False,
             returns_scalar=False,
-            kwargs={
-                "starts": starts_list,
-                "stops": stops_list,
-                "relative": relative,
-                "as_counts": False,
-                "n_other_cols": 0,
-            },
+            kwargs={"relative": relative},
         )
 
         # Post-process: convert to counts or cast to correct output dtype

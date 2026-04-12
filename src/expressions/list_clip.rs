@@ -145,6 +145,9 @@ fn list_clip(inputs: &[Series], kwargs: ListClipKwargs) -> PolarsResult<Series> 
 }
 
 // --- Cross-clip: full cross-product clip without cross-join ---
+// Two variants:
+//   cross_clip: receives starts/stops as kwargs Vec<f64> (small intervals)
+//   cross_clip_series: receives starts/stops as additional Series inputs (larger intervals)
 
 #[derive(serde::Deserialize)]
 struct CrossClipKwargs {
@@ -161,6 +164,132 @@ fn cross_clip_output_type(input_fields: &[Field]) -> PolarsResult<Field> {
         field.name().clone(),
         DataType::List(Box::new(DataType::Float64)),
     ))
+}
+
+// cross_clip_series: receives values + starts + stops as 3 Series inputs
+// Avoids kwargs serialization for large starts/stops arrays
+#[derive(serde::Deserialize)]
+struct CrossClipSeriesKwargs {
+    relative: bool,
+}
+
+fn cross_clip_series_output_type(input_fields: &[Field]) -> PolarsResult<Field> {
+    let field = &input_fields[0];
+    Ok(Field::new(
+        field.name().clone(),
+        DataType::List(Box::new(DataType::Float64)),
+    ))
+}
+
+/// Cross-clip via Series inputs for starts/stops (avoids kwargs serialization overhead).
+/// inputs[0] = values (List[f64], n_units rows)
+/// inputs[1] = starts (Float64, n_intervals rows)
+/// inputs[2] = stops (Float64, n_intervals rows)
+/// Output: List[Float64] with n_units × n_intervals rows
+#[polars_expr(output_type_func=cross_clip_series_output_type)]
+fn cross_clip_series(inputs: &[Series], kwargs: CrossClipSeriesKwargs) -> PolarsResult<Series> {
+    use rayon::prelude::*;
+    use polars_arrow::array::{Array, ListArray, PrimitiveArray};
+
+    let values_series = ensure_list_type(&inputs[0])?;
+    let starts_f64 = inputs[1].cast(&DataType::Float64)?;
+    let stops_f64 = inputs[2].cast(&DataType::Float64)?;
+
+    let list_ca = values_series.list()?;
+    let starts_ca = starts_f64.f64()?;
+    let stops_ca = stops_f64.f64()?;
+
+    let n_units = list_ca.len();
+    let n_intervals = starts_ca.len();
+    let n_out = n_units * n_intervals;
+    let relative = kwargs.relative;
+
+    // Extract starts/stops as slices for fast access
+    let starts: Vec<f64> = starts_ca.into_no_null_iter().collect();
+    let stops: Vec<f64> = stops_ca.into_no_null_iter().collect();
+
+    // Try direct Arrow buffer access
+    let direct_data: Option<(&[i64], &[f64], Option<&polars_arrow::bitmap::Bitmap>)> = 'direct: {
+        if list_ca.chunks().len() != 1 { break 'direct None; }
+        let chunk = &*list_ca.chunks()[0];
+        let list_arr = match chunk.as_any().downcast_ref::<ListArray<i64>>() {
+            Some(a) => a,
+            None => break 'direct None,
+        };
+        let prim = match list_arr.values().as_any().downcast_ref::<PrimitiveArray<f64>>() {
+            Some(p) => p,
+            None => break 'direct None,
+        };
+        if prim.null_count() != 0 { break 'direct None; }
+        Some((&list_arr.offsets()[..], prim.values().as_slice(), chunk.validity()))
+    };
+
+    if let Some((offsets, values_flat, outer_validity)) = direct_data {
+        let all_results: Vec<Option<Vec<f64>>> = (0..n_out)
+            .into_par_iter()
+            .map(|idx| {
+                let u = idx / n_intervals;
+                let j = idx % n_intervals;
+                let is_null = outer_validity.map_or(false, |v| !v.get_bit(u));
+                if is_null { return None; }
+                let row_start = offsets[u] as usize;
+                let row_end = offsets[u + 1] as usize;
+                let unit_slice = &values_flat[row_start..row_end];
+                let start = starts[j];
+                let stop = stops[j];
+                let lo = unit_slice.partition_point(|&x| x < start);
+                let hi = unit_slice.partition_point(|&x| x < stop);
+                let clipped = &unit_slice[lo..hi];
+                if relative {
+                    Some(clipped.iter().map(|&v| v - start).collect())
+                } else {
+                    Some(clipped.to_vec())
+                }
+            })
+            .collect();
+
+        let cap_hint = n_out * 5;
+        let mut builder = ListPrimitiveChunkedBuilder::<Float64Type>::new(
+            values_series.name().clone(), n_out, cap_hint, DataType::Float64,
+        );
+        for row in all_results {
+            match row {
+                Some(slice) => builder.append_slice(&slice),
+                None => builder.append_null(),
+            }
+        }
+        Ok(builder.finish().into_series())
+    } else {
+        // Fallback
+        let cap_hint = n_out * 5;
+        let mut builder = ListPrimitiveChunkedBuilder::<Float64Type>::new(
+            values_series.name().clone(), n_out, cap_hint, DataType::Float64,
+        );
+        for u in 0..n_units {
+            let row_opt = list_ca.get_as_series(u);
+            match row_opt {
+                None => { for _ in 0..n_intervals { builder.append_null(); } }
+                Some(row_series) => {
+                    let float_series = row_series.cast(&DataType::Float64)?;
+                    let float_ca = float_series.f64()?;
+                    let vals: Vec<f64> = float_ca.into_no_null_iter().collect();
+                    for j in 0..n_intervals {
+                        let start = starts[j];
+                        let stop = stops[j];
+                        let lo = vals.partition_point(|&x| x < start);
+                        let hi = vals.partition_point(|&x| x < stop);
+                        let clipped = &vals[lo..hi];
+                        if relative {
+                            builder.append_slice(&clipped.iter().map(|&v| v - start).collect::<Vec<_>>());
+                        } else {
+                            builder.append_slice(clipped);
+                        }
+                    }
+                }
+            }
+        }
+        Ok(builder.finish().into_series())
+    }
 }
 
 /// Perform cross-product clip entirely in Rust using parallel processing.
