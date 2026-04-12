@@ -128,18 +128,16 @@ class VecOpsNamespace:
                 )
 
         # ── Evaluate start/stop expressions in other_eager ─────────────────
-        other_with_bounds = other_eager.with_columns(
-            start_expr.alias(_TEMP_START),
-            stop_expr.alias(_TEMP_STOP),
-        )
+        # Extract starts/stops directly without building a full with_columns DataFrame
+        starts_series_raw = other_eager.select(start_expr).to_series()
+        stops_series_raw = other_eager.select(stop_expr).to_series()
 
-        # Extract starts/stops Series for Rust plugin
-        starts_series = other_with_bounds[_TEMP_START].cast(pl.Float64)
-        stops_series = other_with_bounds[_TEMP_STOP].cast(pl.Float64)
+        starts_series = starts_series_raw.cast(pl.Float64)
+        stops_series = stops_series_raw.cast(pl.Float64)
         n_intervals = len(starts_series)
 
         # ── Determine output dtype ──────────────────────────────────────────
-        start_dtype = other_with_bounds.schema[_TEMP_START]
+        start_dtype = starts_series_raw.dtype
 
         if relative:
             out_inner = (
@@ -179,7 +177,6 @@ class VecOpsNamespace:
         # We need n_units × n_intervals rows in order:
         #   unit0×int0, unit0×int1, ..., unit0×intN, unit1×int0, ...
         n_units = len(df_work)
-        other_data_cols = [c for c in other_with_bounds.columns if c not in (_TEMP_START, _TEMP_STOP)]
 
         # Tile df_eager rows (excluding val column): unit0 × n_intervals times, ...
         # Drop the values column from df_eager before gather to avoid copying large lists
@@ -198,9 +195,8 @@ class VecOpsNamespace:
         # Gather df rows (now without large list column)
         df_tiled = df_no_val[unit_indices]
 
-        # Gather other rows
-        other_data = other_with_bounds.select(other_data_cols)
-        other_tiled = other_data[interval_indices]
+        # Gather other rows (all columns from other_eager)
+        other_tiled = other_eager[interval_indices]
 
         # Build clipped column as a single-column DataFrame
         clipped_df = pl.DataFrame({val_col_name: clipped_series})
