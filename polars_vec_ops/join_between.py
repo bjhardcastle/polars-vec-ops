@@ -126,16 +126,16 @@ class VecOpsNamespace:
                     "ascending order; set check_sortedness=False to skip validation"
                 )
 
-        # ── Cross join ──────────────────────────────────────────────────────
-        joined = df_work.join(other_eager, how="cross")
-
-        joined = joined.with_columns(
+        # ── Evaluate start/stop expressions in other_eager ─────────────────
+        # Materialize start/stop values into other_eager for the interval loop
+        other_with_bounds = other_eager.with_columns(
             start_expr.alias(_TEMP_START),
             stop_expr.alias(_TEMP_STOP),
         )
 
         # ── Determine output dtype ──────────────────────────────────────────
-        start_dtype = joined.schema[_TEMP_START]
+        # Determine start_dtype from other_with_bounds schema
+        start_dtype = other_with_bounds.schema[_TEMP_START]
 
         if relative:
             out_inner = (
@@ -147,28 +147,63 @@ class VecOpsNamespace:
 
         return_dtype: pl.PolarsDataType = pl.UInt32 if as_counts else pl.List(out_inner)
 
-        # ── Clip each row via Rust plugin (binary search on Arrow buffers) ──
-        clipped_expr = register_plugin_function(
-            args=[pl.col(_TEMP_VAL), pl.col(_TEMP_START), pl.col(_TEMP_STOP)],
-            plugin_path=_LIB,
-            function_name="list_clip",
-            is_elementwise=True,
-            returns_scalar=False,
-            kwargs={"relative": relative, "as_counts": False},
-        )
+        # ── Interval-loop: process one interval at a time to avoid cross-join memory ──
+        # Other columns from other_eager (excluding temp cols)
+        other_data_cols = [c for c in other_with_bounds.columns if c not in (_TEMP_START, _TEMP_STOP)]
 
-        # Post-process: convert to counts or cast to correct output dtype
-        if as_counts:
-            clipped_expr = clipped_expr.list.len().cast(pl.UInt32)
-        elif return_dtype != pl.List(pl.Float64):
-            # Cast List(Float64) back to List(out_inner) for integer dtypes
-            clipped_expr = clipped_expr.cast(return_dtype)
+        n_intervals = len(other_with_bounds)
+        chunks = []
 
-        result = (
-            joined
-            .with_columns(clipped_expr.alias(val_col_name))
-            .drop([_TEMP_VAL, _TEMP_START, _TEMP_STOP])
-        )
+        for i in range(n_intervals):
+            # Get start/stop for this interval
+            start_val = other_with_bounds[_TEMP_START][i]
+            stop_val = other_with_bounds[_TEMP_STOP][i]
+
+            # Add literal start/stop to all units (no cross-join memory explosion)
+            chunk = df_work.with_columns([
+                pl.lit(start_val).alias(_TEMP_START),
+                pl.lit(stop_val).alias(_TEMP_STOP),
+            ])
+
+            # Apply Rust list_clip plugin
+            clipped_expr = register_plugin_function(
+                args=[pl.col(_TEMP_VAL), pl.col(_TEMP_START), pl.col(_TEMP_STOP)],
+                plugin_path=_LIB,
+                function_name="list_clip",
+                is_elementwise=True,
+                returns_scalar=False,
+                kwargs={"relative": relative, "as_counts": False},
+            )
+
+            # Post-process: convert to counts or cast to correct output dtype
+            if as_counts:
+                clipped_expr = clipped_expr.list.len().cast(pl.UInt32)
+            elif return_dtype != pl.List(pl.Float64):
+                clipped_expr = clipped_expr.cast(return_dtype)
+
+            chunk = chunk.with_columns(clipped_expr.alias(val_col_name))
+            chunk = chunk.drop([_TEMP_VAL, _TEMP_START, _TEMP_STOP])
+
+            # Add columns from other_eager for this interval row
+            other_row = other_with_bounds[i].drop([_TEMP_START, _TEMP_STOP])
+            # Broadcast scalar values from other_eager row to all units
+            extra_cols = []
+            for col_name in other_data_cols:
+                val = other_row[col_name][0]
+                extra_cols.append(pl.lit(val, dtype=other_with_bounds.schema[col_name]).alias(col_name))
+
+            if extra_cols:
+                chunk = chunk.with_columns(extra_cols)
+
+            chunks.append(chunk)
+
+        if not chunks:
+            # Return empty DataFrame with correct schema
+            result = df_work.head(0).drop([_TEMP_VAL]).with_columns(
+                pl.lit(None).cast(return_dtype).alias(val_col_name)
+            )
+        else:
+            result = pl.concat(chunks)
 
         if is_lazy:
             return result.lazy()
