@@ -1,0 +1,2 @@
+commit	pl_time	pl_mem_mb	np_time	speedup	match	fitness	status	description
+67e51f2	1.2272	1.1	0.0021	0.0017	true	1.000	keep	baseline (map_elements + bisect)
