@@ -16,10 +16,10 @@ import gc
 import json
 import logging
 import os
-import resource
 import sys
 import time
 
+import psutil
 import numpy as np
 import polars as pl
 import polars_vec_ops  # noqa: F401 — registers .vec namespace
@@ -48,7 +48,7 @@ logger.info(f"Data directory: {DATA_DIR}")
 # ── Helpers ──────────────────────────────────────────────────────────────
 
 def _rss_bytes() -> int:
-    return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss * 1024
+    return psutil.Process().memory_info().rss
 
 
 def measure(fn, *args, n_warmup, n_repeats):
