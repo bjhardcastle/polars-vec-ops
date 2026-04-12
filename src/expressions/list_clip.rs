@@ -225,38 +225,55 @@ fn cross_clip_series(inputs: &[Series], kwargs: CrossClipSeriesKwargs) -> Polars
     };
 
     if let Some((offsets, values_flat, outer_validity)) = direct_data {
-        let all_results: Vec<Option<Vec<f64>>> = (0..n_out)
+        // Parallel over units (coarser granularity than pairs → less Rayon overhead)
+        // Each unit thread computes n_intervals results, stores as Vec<(lo, hi)> indices.
+        let unit_clip_indices: Vec<(bool, Vec<(usize, usize)>)> = (0..n_units)
             .into_par_iter()
-            .map(|idx| {
-                let u = idx / n_intervals;
-                let j = idx % n_intervals;
+            .map(|u| {
                 let is_null = outer_validity.map_or(false, |v| !v.get_bit(u));
-                if is_null { return None; }
+                if is_null {
+                    return (true, vec![]);
+                }
                 let row_start = offsets[u] as usize;
                 let row_end = offsets[u + 1] as usize;
                 let unit_slice = &values_flat[row_start..row_end];
-                let start = starts[j];
-                let stop = stops[j];
-                let lo = unit_slice.partition_point(|&x| x < start);
-                let hi = unit_slice.partition_point(|&x| x < stop);
-                let clipped = &unit_slice[lo..hi];
-                if relative {
-                    Some(clipped.iter().map(|&v| v - start).collect())
-                } else {
-                    Some(clipped.to_vec())
-                }
+                let indices: Vec<(usize, usize)> = (0..n_intervals)
+                    .map(|j| {
+                        let start = starts[j];
+                        let stop = stops[j];
+                        let lo = unit_slice.partition_point(|&x| x < start);
+                        let hi = unit_slice.partition_point(|&x| x < stop);
+                        (lo + row_start, hi + row_start) // absolute offsets into values_flat
+                    })
+                    .collect();
+                (false, indices)
             })
             .collect();
 
+        // Build output sequentially from computed indices (avoids Vec<f64> allocations)
+        // The builder needs sequential access, so we flatten here.
         let cap_hint = n_out * 5;
         let mut builder = ListPrimitiveChunkedBuilder::<Float64Type>::new(
             values_series.name().clone(), n_out, cap_hint, DataType::Float64,
         );
-        for row in all_results {
-            match row {
-                Some(slice) => builder.append_slice(&slice),
-                None => builder.append_null(),
+        for (u, (is_null, indices)) in unit_clip_indices.iter().enumerate() {
+            if *is_null {
+                for _ in 0..n_intervals {
+                    builder.append_null();
+                }
+                continue;
             }
+            for (j, &(abs_lo, abs_hi)) in indices.iter().enumerate() {
+                let clipped = &values_flat[abs_lo..abs_hi];
+                if relative {
+                    let start = starts[j];
+                    let shifted: Vec<f64> = clipped.iter().map(|&v| v - start).collect();
+                    builder.append_slice(&shifted);
+                } else {
+                    builder.append_slice(clipped);
+                }
+            }
+            let _ = u; // suppress unused warning
         }
         Ok(builder.finish().into_series())
     } else {
