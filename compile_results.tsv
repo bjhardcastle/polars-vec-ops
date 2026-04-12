@@ -16,3 +16,5 @@ eec6a6a	96.6	72.3	119.0	0.641	discard	incremental=false: worse incremental (+6.5
 561213f	100.0	70.5	70.1	0.633	discard	target-cpu=native: compile +3.6%/+3.8% worse but wall_time -24% (mean ~70ms vs ~92ms)
 c8887d6	92.0	62.8	85.5	0.568	keep	codegen-units=2+target-cpu=native: compile -4.7%/-7.5%, fitness 0.568 (wall_time 55-85ms, passes guard)
 fe3b7c3	93.2	63.3	85.3	0.573	discard	codegen-units=1: slightly worse than 2 (clean +1.3%, incr +0.8%), 2 is sweet spot
+c143e61	91.8	62.8	65.4	0.567	discard	cdylib+rlib crate-type: no improvement (cdylib still non-cacheable in sccache)
+748ceb8	114.8	84.7	95.0	0.753	discard	per-dep codegen-units=16: catastrophically worse (+27%/+35%), ThinLTO slower with more bitcode modules per dep
