@@ -6,6 +6,7 @@ use super::helpers::ensure_list_type;
 #[derive(serde::Deserialize)]
 struct ListClipKwargs {
     relative: bool,
+    #[allow(dead_code)]
     as_counts: bool,
 }
 
@@ -60,7 +61,6 @@ fn list_clip(inputs: &[Series], kwargs: ListClipKwargs) -> PolarsResult<Series> 
         // Fast path: direct Arrow buffer access, no per-row allocation
         // Check outer nullity once upfront
         let outer_validity: Option<&polars_arrow::bitmap::Bitmap> = {
-            use polars_arrow::array::Array;
             let chunk = &*list_ca.chunks()[0];
             chunk.validity()
         };
@@ -154,7 +154,9 @@ struct CrossClipKwargs {
     starts: Vec<f64>,
     stops: Vec<f64>,
     relative: bool,
+    #[allow(dead_code)]
     as_counts: bool,
+    #[allow(dead_code)]
     n_other_cols: usize,  // number of other df columns to repeat (not used in Rust, just for reference)
 }
 
