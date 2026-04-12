@@ -3,3 +3,6 @@ rustc-wrapper = "sccache"
 
 [target.x86_64-unknown-linux-gnu]
 rustflags = ["-C", "target-cpu=native"]
+
+[env]
+SCCACHE_DIR = "/dev/shm/sccache"
