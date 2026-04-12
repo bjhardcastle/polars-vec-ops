@@ -20,6 +20,3 @@ codegen-units = 2
 incremental = true
 lto = false
 
-[profile.release.package.polars-vec-ops]
-codegen-units = 1
-
