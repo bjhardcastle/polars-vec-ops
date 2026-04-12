@@ -6,6 +6,7 @@ import polars as pl
 from polars.plugins import register_plugin_function
 
 from polars_vec_ops._internal import __version__ as __version__
+from polars_vec_ops import join_between as _join_between  # noqa: F401
 
 LIB = Path(__file__).parent
 
