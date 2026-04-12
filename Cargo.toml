@@ -19,4 +19,5 @@ panic = "abort"
 codegen-units = 4
 incremental = true
 lto = "thin"
+strip = "debuginfo"
 
