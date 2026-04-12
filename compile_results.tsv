@@ -3,3 +3,4 @@ commit	clean_compile_s	incremental_compile_s	wall_time_ms	fitness	status	descrip
 c39c228	363.7	73.8	84.8	1.022	discard	mold linker (v1.0.3) + clang + target-cpu=native: no compile improvement
 448804d	100.7	71.3	86.0	0.640	keep	sccache: clean build -72% on cache-warm runs (cold=374.8s, warm=100.7s)
 6dada06	105.8	73.7	64.8	1.042	discard	sccache+mold: mold adds overhead, worse than sccache-only
+11101ef	99.9	70.8	100.1	0.636	discard	strip=debuginfo: compile slightly better (+0.6%) but wall_time 100ms>86ms (16% regression, high noise)
