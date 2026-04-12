@@ -200,31 +200,31 @@ fn cross_clip(inputs: &[Series], kwargs: CrossClipKwargs) -> PolarsResult<Series
     };
 
     if let Some((offsets, values_flat, outer_validity)) = direct_data {
-        // Parallel fast path: process each unit in parallel using rayon
-        // Each unit produces n_intervals output rows as a Vec of Vec<f64> (or None for nulls)
-        let unit_results: Vec<Vec<Option<Vec<f64>>>> = (0..n_units)
+        // Parallel fast path: compute all (unit, interval) pairs in parallel.
+        // Output ordering: unit0×all_intervals, unit1×all_intervals, ...
+        // Flatten to a single Vec<Option<Vec<f64>>> with n_units * n_intervals entries.
+        let all_results: Vec<Option<Vec<f64>>> = (0..n_out)
             .into_par_iter()
-            .map(|u| {
+            .map(|idx| {
+                let u = idx / n_intervals;
+                let j = idx % n_intervals;
                 let is_null = outer_validity.map_or(false, |v| !v.get_bit(u));
                 if is_null {
-                    return (0..n_intervals).map(|_| None).collect();
+                    return None;
                 }
                 let row_start = offsets[u] as usize;
                 let row_end = offsets[u + 1] as usize;
                 let unit_slice = &values_flat[row_start..row_end];
-
-                (0..n_intervals).map(|j| {
-                    let start = starts[j];
-                    let stop = stops[j];
-                    let lo = unit_slice.partition_point(|&x| x < start);
-                    let hi = unit_slice.partition_point(|&x| x < stop);
-                    let clipped = &unit_slice[lo..hi];
-                    if relative {
-                        Some(clipped.iter().map(|&v| v - start).collect::<Vec<f64>>())
-                    } else {
-                        Some(clipped.to_vec())
-                    }
-                }).collect()
+                let start = starts[j];
+                let stop = stops[j];
+                let lo = unit_slice.partition_point(|&x| x < start);
+                let hi = unit_slice.partition_point(|&x| x < stop);
+                let clipped = &unit_slice[lo..hi];
+                if relative {
+                    Some(clipped.iter().map(|&v| v - start).collect::<Vec<f64>>())
+                } else {
+                    Some(clipped.to_vec())
+                }
             })
             .collect();
 
@@ -236,12 +236,10 @@ fn cross_clip(inputs: &[Series], kwargs: CrossClipKwargs) -> PolarsResult<Series
             cap_hint,
             DataType::Float64,
         );
-        for unit_rows in unit_results {
-            for row in unit_rows {
-                match row {
-                    Some(slice) => builder.append_slice(&slice),
-                    None => builder.append_null(),
-                }
+        for row in all_results {
+            match row {
+                Some(slice) => builder.append_slice(&slice),
+                None => builder.append_null(),
             }
         }
         Ok(builder.finish().into_series())
