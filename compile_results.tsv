@@ -1,3 +1,4 @@
 commit	clean_compile_s	incremental_compile_s	wall_time_ms	fitness	status	description
 7661541	360.6	71.3	119.5	1.000	keep	baseline
 c39c228	363.7	73.8	84.8	1.022	discard	mold linker (v1.0.3) + clang + target-cpu=native: no compile improvement
+448804d	100.7	71.3	86.0	0.640	keep	sccache: clean build -72% on cache-warm runs (cold=374.8s, warm=100.7s)
