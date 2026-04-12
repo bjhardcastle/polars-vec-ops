@@ -9,3 +9,4 @@ a483dd6	111.5	81.3	59.2	0.725	discard	codegen-units=16: link overhead dominates,
 507e1ec	106.7	77.7	68.9	0.693	discard	codegen-units=8: still worse than 4 due to link overhead
 6aa6fab	99.4	68.2	112.8	0.616	discard	stable+sccache+mold: no compile gain, runtime regression (high noise)
 4469639	97.3	68.0	110.1	0.612	discard	histogram.rs split (566+548 lines): no incremental improvement, bottleneck is linking not compilation
+8227c7b	97.6	68.3	100.7	0.614	discard	gold linker (-fuse-ld=gold): no improvement over ld.bfd, link/ThinLTO step dominates
