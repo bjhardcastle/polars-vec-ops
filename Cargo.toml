@@ -20,3 +20,6 @@ codegen-units = 2
 incremental = true
 lto = "thin"
 
+[profile.release.package."*"]
+codegen-units = 16
+
