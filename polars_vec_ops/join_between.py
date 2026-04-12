@@ -203,17 +203,17 @@ class VecOpsNamespace:
         # Build output from df columns (tiled)
         df_tiled = df_eager.select([
             c for c in df_eager.columns if c != val_col_name or val_col_name not in df_eager.columns
-        ]).take(unit_indices)
+        ])[unit_indices]
 
         # Build other columns (repeated per unit)
         other_data = other_with_bounds.select(other_data_cols)
-        other_tiled = other_data.take(interval_indices)
+        other_tiled = other_data[interval_indices]
 
         # Combine all columns
         result_frames = []
         # Add df_eager columns (excluding _TEMP_VAL if it was added)
         df_cols = [c for c in df_eager.columns]
-        df_tiled2 = df_eager.take(unit_indices).select(df_cols)
+        df_tiled2 = df_eager[unit_indices].select(df_cols)
 
         # Build clipped series as a DataFrame column
         clipped_df = pl.DataFrame({val_col_name: clipped_series})
