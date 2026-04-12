@@ -126,16 +126,19 @@ class VecOpsNamespace:
                     "ascending order; set check_sortedness=False to skip validation"
                 )
 
-        # ── Cross join ──────────────────────────────────────────────────────
-        joined = df_work.join(other_eager, how="cross")
-
-        joined = joined.with_columns(
+        # ── Evaluate start/stop expressions in other_eager ─────────────────
+        other_with_bounds = other_eager.with_columns(
             start_expr.alias(_TEMP_START),
             stop_expr.alias(_TEMP_STOP),
         )
 
+        # Extract starts/stops as Python lists for passing to Rust kwargs
+        starts_list: list[float] = other_with_bounds[_TEMP_START].cast(pl.Float64).to_list()
+        stops_list: list[float] = other_with_bounds[_TEMP_STOP].cast(pl.Float64).to_list()
+        n_intervals = len(starts_list)
+
         # ── Determine output dtype ──────────────────────────────────────────
-        start_dtype = joined.schema[_TEMP_START]
+        start_dtype = other_with_bounds.schema[_TEMP_START]
 
         if relative:
             out_inner = (
@@ -147,28 +150,82 @@ class VecOpsNamespace:
 
         return_dtype: pl.PolarsDataType = pl.UInt32 if as_counts else pl.List(out_inner)
 
-        # ── Clip each row via Rust plugin (binary search on Arrow buffers) ──
-        clipped_expr = register_plugin_function(
-            args=[pl.col(_TEMP_VAL), pl.col(_TEMP_START), pl.col(_TEMP_STOP)],
+        # ── Call cross_clip Rust plugin (no cross-join!) ─────────────────────
+        # cross_clip takes the values column and produces n_units × n_intervals rows.
+        # The output is in the same order as a cross-join: unit0×all_intervals, unit1×all_intervals, ...
+        cross_clip_expr = register_plugin_function(
+            args=[pl.col(_TEMP_VAL)],
             plugin_path=_LIB,
-            function_name="list_clip",
-            is_elementwise=True,
+            function_name="cross_clip",
+            is_elementwise=False,
             returns_scalar=False,
-            kwargs={"relative": relative, "as_counts": False},
+            kwargs={
+                "starts": starts_list,
+                "stops": stops_list,
+                "relative": relative,
+                "as_counts": False,
+                "n_other_cols": 0,
+            },
         )
 
         # Post-process: convert to counts or cast to correct output dtype
         if as_counts:
-            clipped_expr = clipped_expr.list.len().cast(pl.UInt32)
+            cross_clip_expr = cross_clip_expr.list.len().cast(pl.UInt32)
         elif return_dtype != pl.List(pl.Float64):
-            # Cast List(Float64) back to List(out_inner) for integer dtypes
-            clipped_expr = clipped_expr.cast(return_dtype)
+            cross_clip_expr = cross_clip_expr.cast(return_dtype)
 
-        result = (
-            joined
-            .with_columns(clipped_expr.alias(val_col_name))
-            .drop([_TEMP_VAL, _TEMP_START, _TEMP_STOP])
+        # Apply cross_clip to the df_work (just the values column)
+        clipped_series = df_work.select(
+            cross_clip_expr.alias(val_col_name)
+        )[val_col_name]
+
+        # ── Build the output DataFrame ─────────────────────────────────────
+        # The cross-join output has n_units × n_intervals rows.
+        # Row i*n_intervals+j corresponds to unit i and interval j.
+        # We need to tile df_eager rows (n_intervals times each) and
+        # repeat other_eager (n_units times, interleaved).
+        #
+        # Build unit columns: repeat each unit row n_intervals times
+        n_units = len(df_work)
+        other_data_cols = [c for c in other_with_bounds.columns if c not in (_TEMP_START, _TEMP_STOP)]
+
+        # Tile df_work rows: unit0×n_intervals, unit1×n_intervals, ...
+        # Use row index to create the tiling
+        unit_indices = pl.Series("__unit_idx__",
+            [i for i in range(n_units) for _ in range(n_intervals)],
+            dtype=pl.UInt32
         )
+        interval_indices = pl.Series("__int_idx__",
+            [j for _ in range(n_units) for j in range(n_intervals)],
+            dtype=pl.UInt32
+        )
+
+        # Build output from df columns (tiled)
+        df_tiled = df_eager.select([
+            c for c in df_eager.columns if c != val_col_name or val_col_name not in df_eager.columns
+        ]).take(unit_indices)
+
+        # Build other columns (repeated per unit)
+        other_data = other_with_bounds.select(other_data_cols)
+        other_tiled = other_data.take(interval_indices)
+
+        # Combine all columns
+        result_frames = []
+        # Add df_eager columns (excluding _TEMP_VAL if it was added)
+        df_cols = [c for c in df_eager.columns]
+        df_tiled2 = df_eager.take(unit_indices).select(df_cols)
+
+        # Build clipped series as a DataFrame column
+        clipped_df = pl.DataFrame({val_col_name: clipped_series})
+
+        # Stack: df cols + clipped + other cols
+        # Remove val_col_name from df_tiled2 if present (we use clipped instead)
+        if val_col_name in df_tiled2.columns:
+            df_base = df_tiled2.drop(val_col_name)
+        else:
+            df_base = df_tiled2
+
+        result = pl.concat([df_base, clipped_df, other_tiled], how="horizontal")
 
         if is_lazy:
             return result.lazy()
