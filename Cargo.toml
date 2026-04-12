@@ -16,7 +16,7 @@ polars-arrow = { version = "0.51.0", default-features = false }
 
 [profile.release]
 panic = "abort"
-codegen-units = 8
+codegen-units = 4
 incremental = true
 lto = "thin"
 
