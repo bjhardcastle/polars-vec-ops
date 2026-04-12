@@ -225,19 +225,20 @@ fn cross_clip_series(inputs: &[Series], kwargs: CrossClipSeriesKwargs) -> Polars
     };
 
     if let Some((offsets, values_flat, outer_validity)) = direct_data {
-        // Parallel over units (coarser granularity than pairs → less Rayon overhead)
-        // Each unit thread computes n_intervals results, stores as Vec<(lo, hi)> indices.
-        let unit_clip_indices: Vec<(bool, Vec<(usize, usize)>)> = (0..n_units)
+        // Parallel over units to compute absolute (lo, hi) offsets into values_flat.
+        // Each unit emits n_intervals (lo, hi) pairs — total n_units × n_intervals pairs.
+        let unit_clip_indices: Vec<Vec<(usize, usize)>> = (0..n_units)
             .into_par_iter()
             .map(|u| {
                 let is_null = outer_validity.map_or(false, |v| !v.get_bit(u));
                 if is_null {
-                    return (true, vec![]);
+                    // Use (usize::MAX, usize::MAX) as sentinel for null rows
+                    return vec![(usize::MAX, usize::MAX); n_intervals];
                 }
                 let row_start = offsets[u] as usize;
                 let row_end = offsets[u + 1] as usize;
                 let unit_slice = &values_flat[row_start..row_end];
-                let indices: Vec<(usize, usize)> = (0..n_intervals)
+                (0..n_intervals)
                     .map(|j| {
                         let start = starts[j];
                         let stop = stops[j];
@@ -245,37 +246,81 @@ fn cross_clip_series(inputs: &[Series], kwargs: CrossClipSeriesKwargs) -> Polars
                         let hi = unit_slice.partition_point(|&x| x < stop);
                         (lo + row_start, hi + row_start) // absolute offsets into values_flat
                     })
-                    .collect();
-                (false, indices)
+                    .collect()
             })
             .collect();
 
-        // Build output sequentially from computed indices (avoids Vec<f64> allocations)
-        // The builder needs sequential access, so we flatten here.
-        let cap_hint = n_out * 5;
-        let mut builder = ListPrimitiveChunkedBuilder::<Float64Type>::new(
-            values_series.name().clone(), n_out, cap_hint, DataType::Float64,
-        );
-        for (u, (is_null, indices)) in unit_clip_indices.iter().enumerate() {
-            if *is_null {
-                for _ in 0..n_intervals {
-                    builder.append_null();
+        if !relative {
+            // For non-relative case: build output directly via Arrow flat buffer + offsets.
+            // First pass: compute output sizes to build the offsets array.
+            let mut flat_values: Vec<f64> = Vec::new();
+            let mut out_offsets: Vec<i64> = Vec::with_capacity(n_out + 1);
+            let mut validity_buf: Vec<bool> = Vec::with_capacity(n_out);
+            let has_nulls = outer_validity.is_some();
+
+            out_offsets.push(0);
+            let mut total_vals: i64 = 0;
+
+            for unit_indices in &unit_clip_indices {
+                for &(lo, hi) in unit_indices {
+                    if lo == usize::MAX {
+                        // null row
+                        validity_buf.push(false);
+                        out_offsets.push(total_vals);
+                    } else {
+                        if has_nulls { validity_buf.push(true); }
+                        let slice = &values_flat[lo..hi];
+                        flat_values.extend_from_slice(slice);
+                        total_vals += (hi - lo) as i64;
+                        out_offsets.push(total_vals);
+                    }
                 }
-                continue;
             }
-            for (j, &(abs_lo, abs_hi)) in indices.iter().enumerate() {
-                let clipped = &values_flat[abs_lo..abs_hi];
-                if relative {
-                    let start = starts[j];
-                    let shifted: Vec<f64> = clipped.iter().map(|&v| v - start).collect();
-                    builder.append_slice(&shifted);
-                } else {
-                    builder.append_slice(clipped);
+
+            // Build Arrow LargeListArray
+            use polars_arrow::array::{ListArray, PrimitiveArray};
+            use polars_arrow::buffer::Buffer;
+            use polars_arrow::datatypes::{ArrowDataType, Field as ArrowField};
+            use polars_arrow::offset::OffsetsBuffer;
+            use polars_arrow::bitmap::MutableBitmap;
+
+            let values_arr = PrimitiveArray::<f64>::from_vec(flat_values);
+            let offsets_buf = unsafe { OffsetsBuffer::<i64>::new_unchecked(Buffer::from(out_offsets)) };
+            let inner_field = ArrowField::new("item".into(), ArrowDataType::Float64, true);
+            let list_dtype = ArrowDataType::LargeList(Box::new(inner_field));
+
+            let validity = if has_nulls {
+                let mut bm = MutableBitmap::with_capacity(n_out);
+                for &v in &validity_buf { bm.push(v); }
+                Some(bm.freeze())
+            } else {
+                None
+            };
+
+            let list_arr = ListArray::<i64>::new(list_dtype, offsets_buf, Box::new(values_arr), validity);
+            let ca = ListChunked::with_chunk(values_series.name().clone(), list_arr);
+            Ok(ca.into_series())
+        } else {
+            // For relative case: need to subtract start from each element.
+            // Build output via sequential builder (relative case is less common).
+            let cap_hint = n_out * 5;
+            let mut builder = ListPrimitiveChunkedBuilder::<Float64Type>::new(
+                values_series.name().clone(), n_out, cap_hint, DataType::Float64,
+            );
+            for unit_indices in &unit_clip_indices {
+                for (j, &(lo, hi)) in unit_indices.iter().enumerate() {
+                    if lo == usize::MAX {
+                        builder.append_null();
+                    } else {
+                        let clipped = &values_flat[lo..hi];
+                        let start = starts[j];
+                        let shifted: Vec<f64> = clipped.iter().map(|&v| v - start).collect();
+                        builder.append_slice(&shifted);
+                    }
                 }
             }
-            let _ = u; // suppress unused warning
+            Ok(builder.finish().into_series())
         }
-        Ok(builder.finish().into_series())
     } else {
         // Fallback
         let cap_hint = n_out * 5;
