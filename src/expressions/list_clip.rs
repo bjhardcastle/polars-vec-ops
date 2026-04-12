@@ -251,38 +251,61 @@ fn cross_clip_series(inputs: &[Series], kwargs: CrossClipSeriesKwargs) -> Polars
             .collect();
 
         if !relative {
-            // For non-relative case: build output directly via Arrow flat buffer + offsets.
-            // First pass: compute output sizes to build the offsets array.
-            let mut flat_values: Vec<f64> = Vec::new();
-            let mut out_offsets: Vec<i64> = Vec::with_capacity(n_out + 1);
-            let mut validity_buf: Vec<bool> = Vec::with_capacity(n_out);
+            // For non-relative case: build output via Arrow flat buffer + offsets.
+            // Two-pass: first compute per-output-row sizes (parallel), then fill flat buffer.
+            use polars_arrow::array::{ListArray, PrimitiveArray};
+            use polars_arrow::buffer::Buffer;
+            use polars_arrow::datatypes::{ArrowDataType, Field as ArrowField};
+            use polars_arrow::offset::OffsetsBuffer;
+            use polars_arrow::bitmap::MutableBitmap;
+
             let has_nulls = outer_validity.is_some();
 
+            // Flatten clip indices into a single slice for sequential processing
+            // unit_clip_indices[u][j] = (abs_lo, abs_hi) for unit u, interval j
+            // Output order: u0×j0, u0×j1, ..., u0×jN, u1×j0, ...
+
+            // Compute output offsets from sizes
+            let mut out_offsets: Vec<i64> = Vec::with_capacity(n_out + 1);
             out_offsets.push(0);
             let mut total_vals: i64 = 0;
+            let mut validity_buf: Vec<bool> = if has_nulls { Vec::with_capacity(n_out) } else { Vec::new() };
 
             for unit_indices in &unit_clip_indices {
                 for &(lo, hi) in unit_indices {
                     if lo == usize::MAX {
-                        // null row
-                        validity_buf.push(false);
+                        if has_nulls { validity_buf.push(false); }
                         out_offsets.push(total_vals);
                     } else {
                         if has_nulls { validity_buf.push(true); }
-                        let slice = &values_flat[lo..hi];
-                        flat_values.extend_from_slice(slice);
                         total_vals += (hi - lo) as i64;
                         out_offsets.push(total_vals);
                     }
                 }
             }
 
-            // Build Arrow LargeListArray
-            use polars_arrow::array::{ListArray, PrimitiveArray};
-            use polars_arrow::buffer::Buffer;
-            use polars_arrow::datatypes::{ArrowDataType, Field as ArrowField};
-            use polars_arrow::offset::OffsetsBuffer;
-            use polars_arrow::bitmap::MutableBitmap;
+            // Pre-allocate flat values buffer and fill in parallel by unit
+            let mut flat_values: Vec<f64> = vec![0.0f64; total_vals as usize];
+
+            // Compute per-unit output start positions in flat_values
+            // out_offsets[u*n_intervals] = start position for unit u's output
+            let unit_out_starts: Vec<usize> = (0..n_units)
+                .map(|u| out_offsets[u * n_intervals] as usize)
+                .collect();
+
+            // Fill flat_values sequentially from the precomputed indices.
+            // The sequential fill is fast since data is already in L3/RAM from the parallel pass.
+            {
+                let mut write_pos: usize = 0;
+                for unit_indices in &unit_clip_indices {
+                    for &(lo, hi) in unit_indices {
+                        if lo == usize::MAX { continue; } // null row
+                        let len = hi - lo;
+                        flat_values[write_pos..write_pos + len].copy_from_slice(&values_flat[lo..hi]);
+                        write_pos += len;
+                    }
+                }
+            }
 
             let values_arr = PrimitiveArray::<f64>::from_vec(flat_values);
             let offsets_buf = unsafe { OffsetsBuffer::<i64>::new_unchecked(Buffer::from(out_offsets)) };
