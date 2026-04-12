@@ -8,3 +8,4 @@ b41d65f	0.2085	0.0	0.0021	0.0100	false	-	discard	interval-loop (wrong output ord
 40b5452	0.0019	0.0	0.0021	1.0794	true	0.001	keep	avoid gather of large list col (drop before indexing, 646x vs baseline)
 19d6c34	0.0014	0.0	0.0021	1.4335	true	0.001	keep	numpy repeat/tile for faster index construction (1.43x faster than numpy)
 7fd57ef	0.0013	0.0	0.0020	1.6139	true	0.001	keep	cross_clip_series uses Series inputs instead of kwargs (1.61x faster than numpy)
+612b26c	0.0011	0.0	0.0022	1.9765	true	0.001	keep	parallel over units with abs offsets (1.98x faster than numpy)
