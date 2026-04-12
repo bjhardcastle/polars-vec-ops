@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import polars as pl
 from polars._typing import IntoExpr, IntoExprColumn, FrameType
 from polars.plugins import register_plugin_function
@@ -190,14 +191,13 @@ class VecOpsNamespace:
         df_no_val = df_eager.drop(val_col_name) if val_col_name in df_eager.columns else df_eager
 
         # Build unit indices: [0,0,...,0, 1,1,...,1, ..., n_units-1, ...]
+        # Use numpy for fast vectorized index construction
         unit_indices = pl.Series(
-            [i for i in range(n_units) for _ in range(n_intervals)],
-            dtype=pl.UInt32
+            np.repeat(np.arange(n_units, dtype=np.uint32), n_intervals)
         )
         # Build interval indices: [0,1,...,n-1, 0,1,...,n-1, ...]
         interval_indices = pl.Series(
-            [j for _ in range(n_units) for j in range(n_intervals)],
-            dtype=pl.UInt32
+            np.tile(np.arange(n_intervals, dtype=np.uint32), n_units)
         )
 
         # Gather df rows (now without large list column)
