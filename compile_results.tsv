@@ -12,3 +12,4 @@ a483dd6	111.5	81.3	59.2	0.725	discard	codegen-units=16: link overhead dominates,
 8227c7b	97.6	68.3	100.7	0.614	discard	gold linker (-fuse-ld=gold): no improvement over ld.bfd, link/ThinLTO step dominates
 c1a7666	97.0	68.2	70.3	0.613	discard	sparse registry index: no compile improvement (only affects crate index fetch)
 eec6a6a	96.6	72.3	119.0	0.641	discard	incremental=false: worse incremental (+6.5%), Rust reuses LLVM IR within crate with incremental=true
+88fce62	88.5	59.7	110.2	0.544	discard	codegen-units=2: compile -8%/-12% but wall_time regress 100-120ms (threshold 87.8ms)
