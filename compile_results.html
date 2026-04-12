@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <style>
+    #vis.vega-embed {
+      width: 100%;
+      display: flex;
+    }
+
+    #vis.vega-embed details,
+    #vis.vega-embed details summary {
+      position: relative;
+    }
+  </style>
+  <script type="text/javascript" src="https://cdn.jsdelivr.net/npm/vega@6"></script>
+  <script type="text/javascript" src="https://cdn.jsdelivr.net/npm/vega-lite@6.1.0"></script>
+  <script type="text/javascript" src="https://cdn.jsdelivr.net/npm/vega-embed@7"></script>
+</head>
+<body>
+  <div id="vis"></div>
+  <script>
+    (function(vegaEmbed) {
+      var spec = {"config": {"view": {"continuousWidth": 300, "continuousHeight": 300}}, "vconcat": [{"mark": {"type": "line", "point": true}, "encoding": {"color": {"field": "status", "scale": {"domain": ["keep", "discard", "crash"], "range": ["#2ca02c", "#d62728", "#7f7f7f"]}, "type": "nominal"}, "tooltip": [{"field": "commit", "type": "nominal"}, {"field": "status", "type": "nominal"}, {"field": "description", "type": "nominal"}, {"field": "clean_compile_s", "type": "quantitative"}, {"field": "incremental_compile_s", "type": "quantitative"}, {"field": "wall_time_ms", "type": "quantitative"}, {"field": "fitness", "type": "quantitative"}], "x": {"field": "experiment", "title": "Experiment #", "type": "quantitative"}, "y": {"field": "fitness", "scale": {"zero": false}, "title": "Fitness (lower=better)", "type": "quantitative"}}, "height": 250, "title": "Composite Compile-Time Fitness Over Experiments", "width": 800}, {"mark": {"type": "line", "color": "#1f77b4", "point": true}, "encoding": {"tooltip": [{"field": "commit", "type": "nominal"}, {"field": "status", "type": "nominal"}, {"field": "description", "type": "nominal"}, {"field": "clean_compile_s", "type": "quantitative"}, {"field": "incremental_compile_s", "type": "quantitative"}, {"field": "wall_time_ms", "type": "quantitative"}, {"field": "fitness", "type": "quantitative"}], "x": {"field": "experiment", "title": "Experiment #", "type": "quantitative"}, "y": {"field": "clean_compile_s", "scale": {"zero": false}, "title": "Clean Build (s)", "type": "quantitative"}}, "height": 200, "title": "Clean Build Time (s)", "width": 800}, {"mark": {"type": "line", "color": "#ff7f0e", "point": true}, "encoding": {"tooltip": [{"field": "commit", "type": "nominal"}, {"field": "status", "type": "nominal"}, {"field": "description", "type": "nominal"}, {"field": "clean_compile_s", "type": "quantitative"}, {"field": "incremental_compile_s", "type": "quantitative"}, {"field": "wall_time_ms", "type": "quantitative"}, {"field": "fitness", "type": "quantitative"}], "x": {"field": "experiment", "title": "Experiment #", "type": "quantitative"}, "y": {"field": "incremental_compile_s", "scale": {"zero": false}, "title": "Incremental Build (s)", "type": "quantitative"}}, "height": 200, "title": "Incremental Build Time (s)", "width": 800}, {"mark": {"type": "line", "color": "#9467bd", "point": true}, "encoding": {"tooltip": [{"field": "commit", "type": "nominal"}, {"field": "status", "type": "nominal"}, {"field": "description", "type": "nominal"}, {"field": "clean_compile_s", "type": "quantitative"}, {"field": "incremental_compile_s", "type": "quantitative"}, {"field": "wall_time_ms", "type": "quantitative"}, {"field": "fitness", "type": "quantitative"}], "x": {"field": "experiment", "title": "Experiment #", "type": "quantitative"}, "y": {"field": "wall_time_ms", "scale": {"zero": false}, "title": "Runtime wall_time (ms)", "type": "quantitative"}}, "height": 200, "title": "Runtime Wall Time (ms, regression guard)", "width": 800}], "data": {"name": "data-bd49951e49898992adef76a6a37daafa"}, "resolve": {"scale": {"x": "shared"}}, "$schema": "https://vega.github.io/schema/vega-lite/v6.1.0.json", "datasets": {"data-bd49951e49898992adef76a6a37daafa": [{"experiment": 0, "commit": "7661541", "clean_compile_s": 360.6, "incremental_compile_s": 71.3, "wall_time_ms": 119.5, "fitness": 1.0, "status": "keep", "description": "baseline", "experiment_label": "7661541: baseline", "color": "#2ca02c"}, {"experiment": 1, "commit": "c39c228", "clean_compile_s": 363.7, "incremental_compile_s": 73.8, "wall_time_ms": 84.8, "fitness": 1.022, "status": "discard", "description": "mold linker (v1.0.3) + clang + target-cpu=native: no compile improvement", "experiment_label": "c39c228: mold linker (v1.0.3) + clang + target-cpu=native: ", "color": "#d62728"}, {"experiment": 2, "commit": "448804d", "clean_compile_s": 100.7, "incremental_compile_s": 71.3, "wall_time_ms": 86.0, "fitness": 0.64, "status": "keep", "description": "sccache: clean build -72% on cache-warm runs (cold=374.8s, warm=100.7s)", "experiment_label": "448804d: sccache: clean build -72% on cache-warm runs (cold", "color": "#2ca02c"}, {"experiment": 3, "commit": "6dada06", "clean_compile_s": 105.8, "incremental_compile_s": 73.7, "wall_time_ms": 64.8, "fitness": 1.042, "status": "discard", "description": "sccache+mold: mold adds overhead, worse than sccache-only", "experiment_label": "6dada06: sccache+mold: mold adds overhead, worse than sccac", "color": "#d62728"}, {"experiment": 4, "commit": "11101ef", "clean_compile_s": 99.9, "incremental_compile_s": 70.8, "wall_time_ms": 100.1, "fitness": 0.636, "status": "discard", "description": "strip=debuginfo: compile slightly better (+0.6%) but wall_time 100ms>86ms (16% regression, high noise)", "experiment_label": "11101ef: strip=debuginfo: compile slightly better (+0.6%) b", "color": "#d62728"}, {"experiment": 5, "commit": "a31d5a2", "clean_compile_s": 96.5, "incremental_compile_s": 67.9, "wall_time_ms": 85.2, "fitness": 0.61, "status": "keep", "description": "stable toolchain (1.94.1): clean -4.2%, incremental -4.8% vs nightly (warm sccache)", "experiment_label": "a31d5a2: stable toolchain (1.94.1): clean -4.2%, incrementa", "color": "#2ca02c"}]}};
+      var embedOpt = {"mode": "vega-lite"};
+
+      function showError(el, error){
+          el.innerHTML = ('<div style="color:red;">'
+                          + '<p>JavaScript Error: ' + error.message + '</p>'
+                          + "<p>This usually means there's a typo in your chart specification. "
+                          + "See the javascript console for the full traceback.</p>"
+                          + '</div>');
+          throw error;
+      }
+      const el = document.getElementById('vis');
+      vegaEmbed("#vis", spec, embedOpt)
+        .catch(error => showError(el, error));
+    })(vegaEmbed);
+
+  </script>
+</body>
+</html>
