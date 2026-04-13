@@ -90,9 +90,15 @@ jobs:
           echo "Current version: $VERSION"
 
       - name: Bump version locally (no commit)
-        uses: tj-actions/cargo-bump@v3
-        with:
-          release_type: patch
+        shell: bash
+        run: |
+          python3 - << 'EOF'
+          import re, pathlib
+          f = pathlib.Path('Cargo.toml')
+          c = f.read_text()
+          c = re.sub(r'^version = "(\d+\.\d+\.)(\d+)"', lambda m: f'version = "{m.group(1)}{int(m.group(2))+1}"', c, count=1, flags=re.MULTILINE)
+          f.write_text(c)
+          EOF
 
       - name: Get new version
         id: new-version
@@ -113,13 +119,19 @@ jobs:
             target: aarch64
     steps:
       - uses: actions/checkout@v4
-      - name: Set new version in Cargo.toml
-        uses: tj-actions/cargo-bump@v3
-        with:
-          release_type: patch
       - uses: actions/setup-python@v5
         with:
           python-version: 3.x
+      - name: Set new version in Cargo.toml
+        shell: bash
+        run: |
+          python3 - << 'EOF'
+          import re, pathlib
+          f = pathlib.Path('Cargo.toml')
+          c = f.read_text()
+          c = re.sub(r'^version = "(\d+\.\d+\.)(\d+)"', lambda m: f'version = "{m.group(1)}{int(m.group(2))+1}"', c, count=1, flags=re.MULTILINE)
+          f.write_text(c)
+          EOF
       - name: Build wheels
         uses: PyO3/maturin-action@v1
         with:
@@ -143,14 +155,20 @@ jobs:
             target: x64
     steps:
       - uses: actions/checkout@v4
-      - name: Set new version in Cargo.toml
-        uses: tj-actions/cargo-bump@v3
-        with:
-          release_type: patch
       - uses: actions/setup-python@v5
         with:
           python-version: 3.x
           architecture: ${{ matrix.platform.target }}
+      - name: Set new version in Cargo.toml
+        shell: bash
+        run: |
+          python3 - << 'EOF'
+          import re, pathlib
+          f = pathlib.Path('Cargo.toml')
+          c = f.read_text()
+          c = re.sub(r'^version = "(\d+\.\d+\.)(\d+)"', lambda m: f'version = "{m.group(1)}{int(m.group(2))+1}"', c, count=1, flags=re.MULTILINE)
+          f.write_text(c)
+          EOF
       - name: Build wheels
         uses: PyO3/maturin-action@v1
         with:
@@ -173,13 +191,19 @@ jobs:
             target: aarch64
     steps:
       - uses: actions/checkout@v4
-      - name: Set new version in Cargo.toml
-        uses: tj-actions/cargo-bump@v3
-        with:
-          release_type: patch
       - uses: actions/setup-python@v5
         with:
           python-version: 3.x
+      - name: Set new version in Cargo.toml
+        shell: bash
+        run: |
+          python3 - << 'EOF'
+          import re, pathlib
+          f = pathlib.Path('Cargo.toml')
+          c = f.read_text()
+          c = re.sub(r'^version = "(\d+\.\d+\.)(\d+)"', lambda m: f'version = "{m.group(1)}{int(m.group(2))+1}"', c, count=1, flags=re.MULTILINE)
+          f.write_text(c)
+          EOF
       - name: Build wheels
         uses: PyO3/maturin-action@v1
         with:
@@ -198,9 +222,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Set new version in Cargo.toml
-        uses: tj-actions/cargo-bump@v3
-        with:
-          release_type: patch
+        shell: bash
+        run: |
+          python3 - << 'EOF'
+          import re, pathlib
+          f = pathlib.Path('Cargo.toml')
+          c = f.read_text()
+          c = re.sub(r'^version = "(\d+\.\d+\.)(\d+)"', lambda m: f'version = "{m.group(1)}{int(m.group(2))+1}"', c, count=1, flags=re.MULTILINE)
+          f.write_text(c)
+          EOF
       - name: Build sdist
         uses: PyO3/maturin-action@v1
         with:
@@ -234,9 +264,15 @@ jobs:
         run: rustup show
 
       - name: Bump version in Cargo.toml
-        uses: tj-actions/cargo-bump@v3
-        with:
-          release_type: patch
+        shell: bash
+        run: |
+          python3 - << 'EOF'
+          import re, pathlib
+          f = pathlib.Path('Cargo.toml')
+          c = f.read_text()
+          c = re.sub(r'^version = "(\d+\.\d+\.)(\d+)"', lambda m: f'version = "{m.group(1)}{int(m.group(2))+1}"', c, count=1, flags=re.MULTILINE)
+          f.write_text(c)
+          EOF
 
       - name: Update Cargo.lock
         run: cargo update --workspace
