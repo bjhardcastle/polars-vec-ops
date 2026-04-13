@@ -70,7 +70,39 @@ jobs:
       - run: make install
       - run: make test
 
+  # Compute the next version without committing anything.
+  # Build jobs apply the same bump locally so wheels carry the right version.
+  # The version is only committed to main if all jobs succeed (in `release`).
+  compute-version:
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
+    outputs:
+      current_version: ${{ steps.current-version.outputs.version }}
+      new_version: ${{ steps.new-version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Get current version
+        id: current-version
+        run: |
+          VERSION=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Current version: $VERSION"
+
+      - name: Bump version locally (no commit)
+        uses: tj-actions/cargo-bump@v3
+        with:
+          release_type: patch
+
+      - name: Get new version
+        id: new-version
+        run: |
+          VERSION=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "New version: $VERSION"
+
   linux:
+    needs: [compute-version]
     runs-on: ${{ matrix.platform.runner }}
     strategy:
       matrix:
@@ -81,6 +113,10 @@ jobs:
             target: aarch64
     steps:
       - uses: actions/checkout@v4
+      - name: Set new version in Cargo.toml
+        uses: tj-actions/cargo-bump@v3
+        with:
+          release_type: patch
       - uses: actions/setup-python@v5
         with:
           python-version: 3.x
@@ -98,6 +134,7 @@ jobs:
           path: dist
 
   windows:
+    needs: [compute-version]
     runs-on: ${{ matrix.platform.runner }}
     strategy:
       matrix:
@@ -106,6 +143,10 @@ jobs:
             target: x64
     steps:
       - uses: actions/checkout@v4
+      - name: Set new version in Cargo.toml
+        uses: tj-actions/cargo-bump@v3
+        with:
+          release_type: patch
       - uses: actions/setup-python@v5
         with:
           python-version: 3.x
@@ -123,6 +164,7 @@ jobs:
           path: dist
 
   macos:
+    needs: [compute-version]
     runs-on: ${{ matrix.platform.runner }}
     strategy:
       matrix:
@@ -131,6 +173,10 @@ jobs:
             target: aarch64
     steps:
       - uses: actions/checkout@v4
+      - name: Set new version in Cargo.toml
+        uses: tj-actions/cargo-bump@v3
+        with:
+          release_type: patch
       - uses: actions/setup-python@v5
         with:
           python-version: 3.x
@@ -147,9 +193,14 @@ jobs:
           path: dist
 
   sdist:
+    needs: [compute-version]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Set new version in Cargo.toml
+        uses: tj-actions/cargo-bump@v3
+        with:
+          release_type: patch
       - name: Build sdist
         uses: PyO3/maturin-action@v1
         with:
@@ -165,7 +216,7 @@ jobs:
     name: Release
     runs-on: ubuntu-latest
     if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
-    needs: [linux, windows, macos, sdist, linux-just-test, linux-min-versions-just-test]
+    needs: [compute-version, linux, windows, macos, sdist, linux-just-test, linux-min-versions-just-test]
     permissions:
       # Use to sign the release artifacts
       id-token: write
@@ -176,18 +227,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0    # get all commits (on default branch)
-          fetch-tags: true  
+          fetch-depth: 0
+          fetch-tags: true
 
-      - name: Get current version
-        id: current-version
-        run: |
-          VERSION=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "Current version: $VERSION"
-      
+      - name: Set up Rust
+        run: rustup show
+
       - name: Bump version in Cargo.toml
-        id: cargo-bump
         uses: tj-actions/cargo-bump@v3
         with:
           release_type: patch
@@ -195,31 +241,23 @@ jobs:
       - name: Update Cargo.lock
         run: cargo update --workspace
 
-      - name: Get new version
-        id: new-version
-        run: |
-          VERSION=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "New version: $VERSION"
-    
-      - uses: actions/download-artifact@v4
-        
-      - name: Generate artifact attestation
-        uses: actions/attest-build-provenance@v1
-        with:
-          subject-path: 'wheels-*/*'
-
       - name: Commit version bump
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add Cargo.toml Cargo.lock
-          git commit -m "Bump version: ${{ steps.current-version.outputs.version }} -> ${{ steps.new-version.outputs.version }} [skip actions]"
-    
+          git commit -m "Bump version: ${{ needs.compute-version.outputs.current_version }} -> ${{ needs.compute-version.outputs.new_version }} [skip actions]"
+
       - name: Create tag
-        run: |
-          git tag v${{ steps.new-version.outputs.version }}
-    
+        run: git tag v${{ needs.compute-version.outputs.new_version }}
+
+      - uses: actions/download-artifact@v4
+
+      - name: Generate artifact attestation
+        uses: actions/attest-build-provenance@v1
+        with:
+          subject-path: 'wheels-*/*'
+
       - name: Publish to PyPI
         uses: PyO3/maturin-action@v1
         with:
