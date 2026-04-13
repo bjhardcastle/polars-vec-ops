@@ -45,22 +45,128 @@ class VecOpsNamespace:
         values
             Column name or expression in ``self`` resolving to a sorted
             ``list[T]`` or ``array[T, N]`` where ``T`` is any numeric type.
+            Values outside ``[start, stop)`` are dropped.  Array columns are
+            treated as variable-length lists; the output column is always
+            ``list``.
         bounds
             Two-element tuple ``(start, stop)`` where each element is a column
-            name, expression, or literal in ``other`` resolving to a scalar.
+            name or expression in ``other`` resolving to a scalar, or a literal value.
             Defines the half-open window ``[start, stop)`` applied to ``values``.
         relative
-            If ``True``, shift retained values by ``-start``.  Default: ``False``.
+            If ``True``, shift retained values by ``-start`` so they are
+            expressed relative to interval onset.  Default: ``False``
+            (values remain in their original coordinate space).
         as_counts
-            If ``True``, return the count of values in ``[start, stop)`` as
-            ``UInt32`` instead of the clipped list.  Default: ``False``.
+            If ``True``, return the number of ``values`` values that fall within
+            ``[start, stop)`` as a ``UInt32`` scalar instead of materialising
+            the clipped list.  Faster and more memory-efficient when the actual
+            values are not needed — the count is derived from two binary
+            searches on the sorted list with no allocation.
+            Default: ``False``.
         allow_parallel
-            Allow the cross-join to be parallelised.  Default: ``True``.
-        force_parallel
-            Force parallel execution.  Default: ``False``.
-        check_sortedness
-            Validate that every list in ``values`` is sorted ascending.
+            Currently unused; reserved for future parallel-execution support.
             Default: ``True``.
+        force_parallel
+            Currently unused; reserved for future parallel-execution support.
+            Default: ``False``.
+        check_sortedness
+            If ``True``, validate that every list in ``values`` is sorted in
+            ascending order before joining.  Raises ``InvalidOperationError`` if
+            not.  Disable only when sortedness is guaranteed upstream.
+            Default: ``True``.
+
+        Returns
+        -------
+        pl.DataFrame | pl.LazyFrame
+            Shape ``(n_self_rows * n_other_rows, ...)``.  Columns from ``self``
+            appear first (with ``values`` replaced), followed by columns from
+            ``other``.  The column resolved by ``values`` is replaced with either:
+
+            - ``list[T]`` — clipped values (absolute coordinates by default,
+              or shifted by ``-start`` when ``relative=True``), when
+              ``as_counts=False`` (default).  The inner type ``T`` preserves
+              the input type, or follows Polars type-promotion rules when
+              ``relative=True`` (the subtraction ``value_element - start`` may
+              widen the type).  Array input is always returned as ``list``.
+            - ``UInt32`` — count of values within ``[start, stop)``,
+              when ``as_counts=True``.
+
+        Examples
+        --------
+        >>> import polars as pl
+        >>> import polars_vec_ops  # noqa: F401 — registers .vec namespace
+        >>> events = pl.DataFrame({
+        ...     "event_id": [0, 1],
+        ...     "event_times": [[0.1, 0.5, 1.2, 1.8, 2.3], [0.2, 0.9, 1.5, 2.1]],
+        ... })
+        >>> intervals = pl.DataFrame({
+        ...     "interval_id": [0, 1, 2],
+        ...     "start_time": [0.0, 1.0, 2.0],
+        ...     "stop_time":  [1.0, 2.0, 3.0],
+        ... })
+        >>> events.vec.join_between(
+        ...     other=intervals,
+        ...     values="event_times",
+        ...     bounds=("start_time", "stop_time"),
+        ... )
+        shape: (6, 5)
+        ┌──────────┬─────────────┬─────────────┬────────────┬───────────┐
+        │ event_id ┆ event_times ┆ interval_id ┆ start_time ┆ stop_time │
+        │ ---      ┆ ---         ┆ ---         ┆ ---        ┆ ---       │
+        │ i64      ┆ list[f64]   ┆ i64         ┆ f64        ┆ f64       │
+        ╞══════════╪═════════════╪═════════════╪════════════╪═══════════╡
+        │ 0        ┆ [0.1, 0.5]  ┆ 0           ┆ 0.0        ┆ 1.0       │
+        │ 0        ┆ [1.2, 1.8]  ┆ 1           ┆ 1.0        ┆ 2.0       │
+        │ 0        ┆ [2.3]       ┆ 2           ┆ 2.0        ┆ 3.0       │
+        │ 1        ┆ [0.2, 0.9]  ┆ 0           ┆ 0.0        ┆ 1.0       │
+        │ 1        ┆ [1.5]       ┆ 1           ┆ 1.0        ┆ 2.0       │
+        │ 1        ┆ [2.1]       ┆ 2           ┆ 2.0        ┆ 3.0       │
+        └──────────┴─────────────┴─────────────┴────────────┴───────────┘
+
+        Pass ``relative=True`` to shift values to interval onset:
+
+        >>> events.vec.join_between(
+        ...     other=intervals,
+        ...     values="event_times",
+        ...     bounds=("start_time", "stop_time"),
+        ...     relative=True,
+        ... )
+        shape: (6, 5)
+        ┌──────────┬─────────────┬─────────────┬────────────┬───────────┐
+        │ event_id ┆ event_times ┆ interval_id ┆ start_time ┆ stop_time │
+        │ ---      ┆ ---         ┆ ---         ┆ ---        ┆ ---       │
+        │ i64      ┆ list[f64]   ┆ i64         ┆ f64        ┆ f64       │
+        ╞══════════╪═════════════╪═════════════╪════════════╪═══════════╡
+        │ 0        ┆ [0.1, 0.5]  ┆ 0           ┆ 0.0        ┆ 1.0       │
+        │ 0        ┆ [0.2, 0.8]  ┆ 1           ┆ 1.0        ┆ 2.0       │
+        │ 0        ┆ [0.3]       ┆ 2           ┆ 2.0        ┆ 3.0       │
+        │ 1        ┆ [0.2, 0.9]  ┆ 0           ┆ 0.0        ┆ 1.0       │
+        │ 1        ┆ [0.5]       ┆ 1           ┆ 1.0        ┆ 2.0       │
+        │ 1        ┆ [0.1]       ┆ 2           ┆ 2.0        ┆ 3.0       │
+        └──────────┴─────────────┴─────────────┴────────────┴───────────┘
+
+        Use ``as_counts=True`` for a fast scalar spike count per trial — no list
+        allocation, just two binary searches on the sorted spike times:
+
+        >>> events.vec.join_between(
+        ...     other=intervals,
+        ...     values="event_times",
+        ...     bounds=("start_time", "stop_time"),
+        ...     as_counts=True,
+        ... )
+        shape: (6, 5)
+        ┌──────────┬─────────────┬─────────────┬────────────┬───────────┐
+        │ event_id ┆ event_times ┆ interval_id ┆ start_time ┆ stop_time │
+        │ ---      ┆ ---         ┆ ---         ┆ ---        ┆ ---       │
+        │ i64      ┆ u32         ┆ i64         ┆ f64        ┆ f64       │
+        ╞══════════╪═════════════╪═════════════╪════════════╪═══════════╡
+        │ 0        ┆ 2           ┆ 0           ┆ 0.0        ┆ 1.0       │
+        │ 0        ┆ 2           ┆ 1           ┆ 1.0        ┆ 2.0       │
+        │ 0        ┆ 1           ┆ 2           ┆ 2.0        ┆ 3.0       │
+        │ 1        ┆ 2           ┆ 0           ┆ 0.0        ┆ 1.0       │
+        │ 1        ┆ 1           ┆ 1           ┆ 1.0        ┆ 2.0       │
+        │ 1        ┆ 1           ┆ 2           ┆ 2.0        ┆ 3.0       │
+        └──────────┴─────────────┴─────────────┴────────────┴───────────┘
         """
         df = self._df
         is_lazy = isinstance(df, pl.LazyFrame)
