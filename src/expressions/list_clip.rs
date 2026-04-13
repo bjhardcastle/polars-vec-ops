@@ -70,7 +70,7 @@ fn list_clip(inputs: &[Series], kwargs: ListClipKwargs) -> PolarsResult<Series> 
             let stop_opt = stop_ca.get(i);
 
             // Check for null in this row (list array outer null)
-            let is_null = outer_validity.map_or(false, |v| !v.get_bit(i));
+            let is_null = outer_validity.is_some_and(|v| !v.get_bit(i));
 
             match (start_opt, stop_opt) {
                 (Some(start), Some(stop)) if !is_null => {
@@ -235,7 +235,7 @@ fn cross_clip_series(inputs: &[Series], kwargs: CrossClipSeriesKwargs) -> Polars
         let unit_outputs: Vec<(Vec<f64>, Vec<u32>, bool)> = (0..n_units)
             .into_par_iter()
             .map(|u| {
-                let is_null = outer_validity.map_or(false, |v| !v.get_bit(u));
+                let is_null = outer_validity.is_some_and(|v| !v.get_bit(u));
                 if is_null {
                     return (vec![], vec![u32::MAX; n_intervals], true);
                 }
@@ -297,7 +297,7 @@ fn cross_clip_series(inputs: &[Series], kwargs: CrossClipSeriesKwargs) -> Polars
                 }
             } else {
                 if has_nulls {
-                    for _ in 0..n_intervals { validity_buf.push(true); }
+                    validity_buf.extend(std::iter::repeat_n(true, n_intervals));
                 }
                 flat_values.extend_from_slice(unit_flat);
                 for &len in unit_lens {
@@ -401,7 +401,7 @@ fn cross_clip(inputs: &[Series], kwargs: CrossClipKwargs) -> PolarsResult<Series
             .map(|idx| {
                 let u = idx / n_intervals;
                 let j = idx % n_intervals;
-                let is_null = outer_validity.map_or(false, |v| !v.get_bit(u));
+                let is_null = outer_validity.is_some_and(|v| !v.get_bit(u));
                 if is_null {
                     return None;
                 }
