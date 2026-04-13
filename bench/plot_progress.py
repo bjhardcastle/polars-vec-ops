@@ -7,6 +7,7 @@ try:
     import matplotlib
     matplotlib.use('Agg')
     import matplotlib.pyplot as plt
+    from matplotlib.lines import Line2D
 except ImportError:
     print("matplotlib not available, skipping plot")
     sys.exit(0)
@@ -72,7 +73,6 @@ ax2.legend()
 ax2.grid(True, alpha=0.3)
 
 # Add status legend
-from matplotlib.lines import Line2D
 legend_elements = [
     Line2D([0], [0], marker='o', color='w', markerfacecolor='green', markersize=10, label='keep'),
     Line2D([0], [0], marker='o', color='w', markerfacecolor='red', markersize=10, label='discard'),

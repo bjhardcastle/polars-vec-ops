@@ -223,10 +223,8 @@ def run_benchmarks():
             pl_time, pl_mem, pl_result = measure(
                 psth_polars, units_sub, trials_sub, spacing
             )
-            pl_success = True
         except Exception as e:
             logger.error(f"Polars FAILED: {type(e).__name__}: {e}")
-            pl_success = False
             pl_time = pl_mem = None
             pl_result = None
             print(
