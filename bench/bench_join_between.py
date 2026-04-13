@@ -33,7 +33,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ── Locate data files ────────────────────────────────────────────────────
-_DATA_DIRS = ["/root/capsule/scratch", "/root/capsule/code", os.path.join(os.path.dirname(__file__), "..")]
+_DATA_DIRS = ["/root/capsule/scratch", "/root/capsule/code", pathlib.Path(__file__).parent, pathlib.Path(__file__).parent.parent]
 DATA_DIR = None
 for _d in _DATA_DIRS:
     if os.path.isfile(os.path.join(_d, "units.parquet")):
