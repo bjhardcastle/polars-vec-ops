@@ -1,9 +1,15 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import polars as pl
+from polars._utils.parse import parse_into_expression, parse_into_list_of_expressions
+from polars._utils.wrap import wrap_expr
 from polars.plugins import register_plugin_function
+
+if TYPE_CHECKING:
+    from polars._typing import IntoExprColumn
 
 _LIB = Path(__file__).parent
 
@@ -302,11 +308,11 @@ class VecOpsNamespace:
 
     def histogram(
         self,
-        bins: int | list[float] | pl.Series | pl.Expr | None = None,
+        bins: int | list[float] | pl.Series | pl.Expr | str | None = None,
         *,
-        start: float | pl.Expr | None = None,
-        stop: float | pl.Expr | None = None,
-        spacing: float | pl.Expr | None = None,
+        start: float | pl.Expr | str | pl.Series | None = None,
+        stop: float | pl.Expr | str | pl.Series | None = None,
+        spacing: float | pl.Expr | str | pl.Series | None = None,
         count_dtype: pl.DataType | type[bool] | type[int] | None = None,
         include_breakpoints: bool = False,
     ) -> pl.Expr:
@@ -430,6 +436,8 @@ class VecOpsNamespace:
         kwargs: dict = {"arg_positions": {}, "count_dtype": dtype_str, "include_breakpoints": include_breakpoints}
 
         if has_bins:
+            if isinstance(bins, str):
+                bins = wrap_expr(parse_into_expression(bins))
             if isinstance(bins, pl.Expr):
                 kwargs["mode"] = "bins_int"
                 kwargs["bins_int"] = None
@@ -444,11 +452,13 @@ class VecOpsNamespace:
                 kwargs["bins_int"] = bins
             else:
                 raise TypeError(
-                    f"bins must be int, list, pl.Series, or pl.Expr, got {type(bins)}"
+                    f"bins must be int, list, pl.Series, str, or pl.Expr, got {type(bins)}"
                 )
         else:
             kwargs["mode"] = "range"
             for name, value in [("start", start), ("stop", stop), ("spacing", spacing)]:
+                if isinstance(value, (str, pl.Series)):
+                    value = wrap_expr(parse_into_expression(value))
                 if isinstance(value, pl.Expr):
                     kwargs["arg_positions"][name] = len(args)
                     args.append(value)
@@ -510,7 +520,7 @@ class VecOpsNamespace:
     hist = histogram
 
 
-def sum(*exprs: str) -> pl.Expr:
+def sum(*exprs: IntoExprColumn) -> pl.Expr | list[pl.Expr]:
     """
     Sum across rows for list columns (vertical aggregation).
 
@@ -545,10 +555,11 @@ def sum(*exprs: str) -> pl.Expr:
     │ [1, 3]    ┆ [40, 60]  │
     └───────────┴───────────┘
     """
-    return VecOpsNamespace(pl.col(exprs)).sum()
+    results = [VecOpsNamespace(wrap_expr(e)).sum() for e in parse_into_list_of_expressions(*exprs)]
+    return results[0] if len(results) == 1 else results
 
 
-def mean(*exprs: str) -> pl.Expr:
+def mean(*exprs: IntoExprColumn) -> pl.Expr | list[pl.Expr]:
     """
     Calculate mean across rows for list columns (vertical aggregation).
 
@@ -588,10 +599,11 @@ def mean(*exprs: str) -> pl.Expr:
     │ [2.0, 3.0] ┆ [20.0, 30.0] │
     └────────────┴──────────────┘
     """
-    return VecOpsNamespace(pl.col(exprs)).mean()
+    results = [VecOpsNamespace(wrap_expr(e)).mean() for e in parse_into_list_of_expressions(*exprs)]
+    return results[0] if len(results) == 1 else results
 
 
-def avg(*exprs: str) -> pl.Expr:
+def avg(*exprs: IntoExprColumn) -> pl.Expr | list[pl.Expr]:
     """
     Alias for mean(). Calculate average across rows for list columns.
 
@@ -600,7 +612,7 @@ def avg(*exprs: str) -> pl.Expr:
     return mean(*exprs)
 
 
-def min(*exprs: str) -> pl.Expr:
+def min(*exprs: IntoExprColumn) -> pl.Expr | list[pl.Expr]:
     """
     Find minimum element at each position across rows (vertical aggregation).
 
@@ -640,10 +652,11 @@ def min(*exprs: str) -> pl.Expr:
     │ [1, 5]    ┆ [5, 15]   │
     └───────────┴───────────┘
     """
-    return VecOpsNamespace(pl.col(exprs)).min()
+    results = [VecOpsNamespace(wrap_expr(e)).min() for e in parse_into_list_of_expressions(*exprs)]
+    return results[0] if len(results) == 1 else results
 
 
-def max(*exprs: str) -> pl.Expr:
+def max(*exprs: IntoExprColumn) -> pl.Expr | list[pl.Expr]:
     """
     Find maximum element at each position across rows (vertical aggregation).
 
@@ -683,10 +696,11 @@ def max(*exprs: str) -> pl.Expr:
     │ [3, 7]    ┆ [30, 20]  │
     └───────────┴───────────┘
     """
-    return VecOpsNamespace(pl.col(exprs)).max()
+    results = [VecOpsNamespace(wrap_expr(e)).max() for e in parse_into_list_of_expressions(*exprs)]
+    return results[0] if len(results) == 1 else results
 
 
-def diff(*exprs: str) -> pl.Expr:
+def diff(*exprs: IntoExprColumn) -> pl.Expr | list[pl.Expr]:
     """
     Calculate differences between consecutive rows at each position.
 
@@ -734,11 +748,12 @@ def diff(*exprs: str) -> pl.Expr:
     │ [-2, -15]    ┆ [-20, -150]  │
     └──────────────┴──────────────┘
     """
-    return VecOpsNamespace(pl.col(exprs)).diff()
+    results = [VecOpsNamespace(wrap_expr(e)).diff() for e in parse_into_list_of_expressions(*exprs)]
+    return results[0] if len(results) == 1 else results
 
 
 def convolve(
-    expr: str,
+    expr: IntoExprColumn,
     kernel: list[float] | pl.Series,
     fill_value: float = 0.0,
     mode: str = "same",
@@ -788,12 +803,12 @@ def convolve(
     │ [1.0, 2.0, … 3.5] │
     └───────────────────┘
     """
-    return VecOpsNamespace(pl.col(expr)).convolve(kernel, fill_value, mode)
+    return VecOpsNamespace(wrap_expr(parse_into_expression(expr))).convolve(kernel, fill_value, mode)
 
 
 def histogram(
-    expr: str,
-    bins: int | list[float] | pl.Series | pl.Expr | None = None,
+    expr: IntoExprColumn,
+    bins: int | list[float] | pl.Series | pl.Expr | str | None = None,
     *,
     start: float | pl.Expr | None = None,
     stop: float | pl.Expr | None = None,
@@ -858,7 +873,7 @@ def histogram(
     │ [2, 1, 2] │
     └───────────┘
     """
-    return VecOpsNamespace(pl.col(expr)).histogram(
+    return VecOpsNamespace(wrap_expr(parse_into_expression(expr))).histogram(
         bins, start=start, stop=stop, spacing=spacing,
         count_dtype=count_dtype, include_breakpoints=include_breakpoints,
     )

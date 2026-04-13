@@ -969,6 +969,142 @@ def test_histogram_standalone_function():
     assert result["a"][0].to_list() == np_counts.tolist()
 
 
+def test_standalone_sum_expr():
+    """Test standalone sum accepts pl.Expr and multiple expressions."""
+    import polars_vec_ops as vec
+
+    df = pl.DataFrame({"a": [[0, 1, 2], [1, 2, 3]], "b": [[10, 20], [30, 40]]})
+
+    # str and pl.Expr forms are equivalent for a single column
+    r_str = df.select(vec.sum("a"))
+    r_expr = df.select(vec.sum(pl.col("a")))
+    assert r_str["a"][0].to_list() == r_expr["a"][0].to_list()
+
+    # multiple pl.Expr produces same result as multiple strings
+    r_strs = df.select(vec.sum("a"))
+    r_exprs = df.select(vec.sum(pl.col("a")))
+    assert r_strs["a"][0].to_list() == r_exprs["a"][0].to_list()
+
+    df2 = pl.DataFrame({"a": [[0, 1], [1, 2]], "b": [[10, 20], [30, 40]]})
+    r_two_strs = df2.select(vec.sum("a", "b"))
+    r_two_exprs = df2.select(vec.sum(pl.col("a"), pl.col("b")))
+    assert r_two_strs["a"][0].to_list() == r_two_exprs["a"][0].to_list()
+    assert r_two_strs["b"][0].to_list() == r_two_exprs["b"][0].to_list()
+
+
+def test_standalone_mean_expr():
+    """Test standalone mean accepts pl.Expr."""
+    import polars_vec_ops as vec
+
+    df = pl.DataFrame({"a": [[1, 2, 3], [3, 4, 5]]})
+    r_str = df.select(vec.mean("a"))
+    r_expr = df.select(vec.mean(pl.col("a")))
+    assert r_str["a"][0].to_list() == r_expr["a"][0].to_list()
+
+
+def test_standalone_min_expr():
+    """Test standalone min accepts pl.Expr."""
+    import polars_vec_ops as vec
+
+    df = pl.DataFrame({"a": [[3, 5, 2], [1, 7, 4]]})
+    r_str = df.select(vec.min("a"))
+    r_expr = df.select(vec.min(pl.col("a")))
+    assert r_str["a"][0].to_list() == r_expr["a"][0].to_list()
+
+
+def test_standalone_max_expr():
+    """Test standalone max accepts pl.Expr."""
+    import polars_vec_ops as vec
+
+    df = pl.DataFrame({"a": [[3, 5, 2], [1, 7, 4]]})
+    r_str = df.select(vec.max("a"))
+    r_expr = df.select(vec.max(pl.col("a")))
+    assert r_str["a"][0].to_list() == r_expr["a"][0].to_list()
+
+
+def test_standalone_diff_expr():
+    """Test standalone diff accepts pl.Expr."""
+    import polars_vec_ops as vec
+
+    df = pl.DataFrame({"a": [[5, 10, 15], [2, 15, 5], [0, 0, 0]]})
+    r_str = df.select(vec.diff("a"))
+    r_expr = df.select(vec.diff(pl.col("a")))
+    for i in range(len(r_str)):
+        assert r_str["a"][i].to_list() == r_expr["a"][i].to_list()
+
+
+def test_standalone_convolve_expr():
+    """Test standalone convolve accepts pl.Expr for the column argument."""
+    import polars_vec_ops as vec
+
+    df = pl.DataFrame({"signal": [[1, 2, 3, 4, 5]]})
+    kernel = [0.25, 0.5, 0.25]
+    r_str = df.select(vec.convolve("signal", kernel, mode="same"))
+    r_expr = df.select(vec.convolve(pl.col("signal"), kernel, mode="same"))
+    assert r_str["signal"][0].to_list() == r_expr["signal"][0].to_list()
+
+
+def test_standalone_histogram_expr():
+    """Test standalone histogram accepts pl.Expr for the column argument."""
+    import polars_vec_ops as vec
+
+    df = pl.DataFrame({"a": [[1, 2, 3, 4, 5]]})
+    r_str = df.select(vec.histogram("a", bins=3))
+    r_expr = df.select(vec.histogram(pl.col("a"), bins=3))
+    assert r_str["a"][0].to_list() == r_expr["a"][0].to_list()
+
+
+def test_histogram_bins_str_column():
+    """Test histogram with bins as a string column name."""
+    df = pl.DataFrame({
+        "a": [[1, 2, 3, 4, 5], [10, 20, 30, 40, 50]],
+        "n_bins": [3, 3],
+    })
+    r_str = df.select(pl.col("a").vec.histogram(bins="n_bins"))
+    r_expr = df.select(pl.col("a").vec.histogram(bins=pl.col("n_bins")))
+    assert r_str["a"][0].to_list() == r_expr["a"][0].to_list()
+    assert r_str["a"][1].to_list() == r_expr["a"][1].to_list()
+
+
+def test_histogram_range_str_columns():
+    """Test histogram with start/stop/spacing as string column names."""
+    df = pl.DataFrame({
+        "a": [[1, 2, 3, 4, 5]],
+        "lo": [0.0],
+        "hi": [6.0],
+        "step": [2.0],
+    })
+    r_str = df.select(pl.col("a").vec.histogram(
+        start="lo", stop="hi", spacing="step",
+        include_breakpoints=False,
+    ))
+    r_expr = df.select(pl.col("a").vec.histogram(
+        start=pl.col("lo"), stop=pl.col("hi"), spacing=pl.col("step"),
+        include_breakpoints=False,
+    ))
+    assert r_str["a"][0].to_list() == r_expr["a"][0].to_list()
+
+
+def test_histogram_range_expr_add():
+    """Test that arbitrary expressions work for histogram scalar params."""
+    df = pl.DataFrame({
+        "a": [[1, 2, 3, 4, 5]],
+        "lo": [0.0],
+        "hi": [6.0],
+        "step": [2.0],
+    })
+    # start offset by 0 (identity) — just confirms non-trivial expressions are accepted
+    r_expr_add = df.select(pl.col("a").vec.histogram(
+        start=pl.col("lo").add(0.0), stop=pl.col("hi"), spacing=pl.col("step"),
+        include_breakpoints=False,
+    ))
+    r_plain = df.select(pl.col("a").vec.histogram(
+        start=pl.col("lo"), stop=pl.col("hi"), spacing=pl.col("step"),
+        include_breakpoints=False,
+    ))
+    assert r_expr_add["a"][0].to_list() == r_plain["a"][0].to_list()
+
+
 def test_histogram_validation_mutual_exclusion():
     """Test that bins and start/stop/spacing are mutually exclusive."""
     df = pl.DataFrame({"a": [[1, 2, 3]]})
