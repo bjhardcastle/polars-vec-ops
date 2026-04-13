@@ -270,16 +270,30 @@ class VecOpsNamespace:
             kwargs={"relative": relative},
         )
 
-        # Post-process: convert to counts or cast to correct output dtype
-        if as_counts:
-            cross_clip_expr = cross_clip_expr.list.len().cast(pl.UInt32)
-        elif return_dtype != pl.List(pl.Float64):
+        # Post-process: cast to correct output dtype
+        if not as_counts and return_dtype != pl.List(pl.Float64):
             cross_clip_expr = cross_clip_expr.cast(return_dtype)
 
         # Apply cross_clip to extract only _TEMP_VAL column (avoid gathering large lists)
         clipped_series = df_work.select(_TEMP_VAL).select(
             cross_clip_expr.alias(val_col_name)
         )[val_col_name]
+
+        # Convert list results to counts after clipping, preserving nulls.
+        # This is done after the clip rather than inside the expression because
+        # list.len() returns 0 for null lists in older polars versions.
+        if as_counts:
+            clipped_series = (
+                clipped_series
+                .to_frame()
+                .select(
+                    pl.when(pl.col(val_col_name).is_null())
+                    .then(pl.lit(None).cast(pl.UInt32))
+                    .otherwise(pl.col(val_col_name).list.len().cast(pl.UInt32))
+                    .alias(val_col_name)
+                )
+                [val_col_name]
+            )
 
         # ── Build the output DataFrame efficiently ────────────────────────
         # We need n_units × n_intervals rows in order:
