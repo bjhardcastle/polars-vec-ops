@@ -102,7 +102,7 @@ jobs:
           echo "New version: $VERSION"
 
   linux:
-    needs: [compute-version]
+    needs: [compute-version, linux-just-test, linux-min-versions-just-test]
     runs-on: ${{ matrix.platform.runner }}
     strategy:
       matrix:
@@ -134,7 +134,7 @@ jobs:
           path: dist
 
   windows:
-    needs: [compute-version]
+    needs: [compute-version, linux-just-test, linux-min-versions-just-test]
     runs-on: ${{ matrix.platform.runner }}
     strategy:
       matrix:
@@ -164,7 +164,7 @@ jobs:
           path: dist
 
   macos:
-    needs: [compute-version]
+    needs: [compute-version, linux-just-test, linux-min-versions-just-test]
     runs-on: ${{ matrix.platform.runner }}
     strategy:
       matrix:
@@ -193,7 +193,7 @@ jobs:
           path: dist
 
   sdist:
-    needs: [compute-version]
+    needs: [compute-version, linux-just-test, linux-min-versions-just-test]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
