@@ -307,12 +307,12 @@ def test_join_between_as_counts_retains_columns(units, intervals):
 def test_join_between_vec_as_list_expr(units, intervals):
     """vec accepts arbitrary list expressions; clipping uses the transformed list.
 
-    Adding 1 to the list shifts all values up by 1, producing verifiably
-    different clipping results than the original column.
+    Adding 1 to each element of the list shifts all values up by 1, producing
+    verifiably different clipping results than the original column.
     """
     result = units.vec.join_between(
         other=intervals,
-        values=pl.col("event_times") + 1,
+        values=pl.col("event_times").list.eval(pl.element() + 1),
         bounds=("start_time", "stop_time"),
     ).sort("event_id", "interval_id")
 
