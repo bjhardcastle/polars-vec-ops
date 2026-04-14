@@ -5,7 +5,7 @@ from typing import Any
 
 import numpy as np
 import polars as pl
-from polars._typing import IntoExpr, IntoExprColumn, FrameType
+from polars._typing import IntoExpr, IntoExprColumn, FrameType, PolarsDataType
 from polars.plugins import register_plugin_function
 
 _LIB = Path(__file__).parent
@@ -17,7 +17,7 @@ class VecOpsNamespace:
     """Custom namespace for vertical list operations."""
 
     def __init__(self, df: FrameType) -> None:
-        self._df = df
+        self._df: Any = df
 
     def join_between(
         self,
@@ -248,14 +248,14 @@ class VecOpsNamespace:
         start_dtype = other_with_bounds.schema[_TEMP_START]
 
         if relative:
-            out_inner = (
+            out_inner: PolarsDataType = (
                 pl.Series([0], dtype=inner_dtype)
                 - pl.Series([0], dtype=start_dtype)
             ).dtype
         else:
             out_inner = inner_dtype
 
-        return_dtype: pl.PolarsDataType = pl.UInt32 if as_counts else pl.List(out_inner)
+        return_dtype: PolarsDataType = pl.UInt32 if as_counts else pl.List(out_inner)
 
         # ── Call cross_clip_series Rust plugin (no cross-join!) ───────────────
         # Passes starts/stops as Series inputs (avoids kwargs serialization overhead).
