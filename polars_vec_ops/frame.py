@@ -315,9 +315,6 @@ class VecOpsNamespace:
             np.tile(np.arange(n_intervals, dtype=np.uint32), n_units)
         )
 
-        # Gather df rows (now without large list column)
-        df_tiled = df_no_val[unit_indices]
-
         # Gather other rows
         other_data = other_with_bounds.select(other_data_cols)
         other_tiled = other_data[interval_indices]
@@ -325,8 +322,12 @@ class VecOpsNamespace:
         # Build clipped column as a single-column DataFrame
         clipped_df = pl.DataFrame({val_col_name: clipped_series})
 
-        # Stack horizontally: df columns + clipped values + other columns
-        result = pl.concat([df_tiled, clipped_df, other_tiled], how="horizontal")
+        # Stack horizontally: df columns (if any) + clipped values + other columns
+        if df_no_val.width > 0:
+            df_tiled = df_no_val[unit_indices]
+            result = pl.concat([df_tiled, clipped_df, other_tiled], how="horizontal")
+        else:
+            result = pl.concat([clipped_df, other_tiled], how="horizontal")
 
         if is_lazy:
             return result.lazy()
