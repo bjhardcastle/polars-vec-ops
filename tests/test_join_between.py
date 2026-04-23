@@ -22,6 +22,25 @@ def intervals():
     })
 
 
+@pytest.fixture
+def session_units():
+    return pl.DataFrame({
+        "session_id": ["s1", "s2"],
+        "event_id": [0, 1],
+        "event_times": [[0.1, 1.2, 2.2], [0.2, 0.8, 1.5]],
+    })
+
+
+@pytest.fixture
+def session_intervals():
+    return pl.DataFrame({
+        "session_id": ["s1", "s1", "s2"],
+        "interval_id": [0, 1, 2],
+        "start_time": [0.0, 2.0, 0.0],
+        "stop_time": [1.0, 3.0, 1.0],
+    })
+
+
 # ── Shape & columns ───────────────────────────────────────────────────────────
 
 def test_join_between_row_count(units, intervals):
@@ -352,6 +371,55 @@ def test_join_between_interval_literals(units):
     assert result.filter(pl.col("event_id") == 1)["event_times"][0].to_list() == pytest.approx([1.5])
 
 
+def test_join_between_on_matches_only_same_session(session_units, session_intervals):
+    result = session_units.vec.join_between(
+        other=session_intervals,
+        values="event_times",
+        bounds=("start_time", "stop_time"),
+        on="session_id",
+    ).sort("event_id", "interval_id")
+
+    assert len(result) == 3
+    assert result.columns.count("session_id") == 1
+    assert result["session_id"].to_list() == ["s1", "s1", "s2"]
+    assert result["event_times"].to_list() == [
+        [0.1],
+        [2.2],
+        [0.2, 0.8],
+    ]
+
+
+def test_join_between_left_on_right_on_matches_sessions(session_units, session_intervals):
+    result = session_units.vec.join_between(
+        other=session_intervals.rename({"session_id": "interval_session"}),
+        values="event_times",
+        bounds=("start_time", "stop_time"),
+        left_on="session_id",
+        right_on="interval_session",
+    ).sort("event_id", "interval_id")
+
+    assert len(result) == 3
+    assert "session_id" in result.columns
+    assert "interval_session" not in result.columns
+    assert result["event_times"].to_list() == [
+        [0.1],
+        [2.2],
+        [0.2, 0.8],
+    ]
+
+
+def test_join_between_on_as_counts(session_units, session_intervals):
+    result = session_units.vec.join_between(
+        other=session_intervals,
+        values="event_times",
+        bounds=("start_time", "stop_time"),
+        on="session_id",
+        as_counts=True,
+    ).sort("event_id", "interval_id")
+
+    assert result["event_times"].to_list() == [1, 1, 2]
+
+
 # ── check_sortedness ──────────────────────────────────────────────────────────
 
 def test_join_between_check_sortedness_raises_on_unsorted(intervals):
@@ -472,6 +540,99 @@ def test_join_between_array_col_as_counts(intervals):
         as_counts=True,
     )
     assert result.schema["event_times"] == pl.UInt32
+
+
+# ── LazyFrame support ─────────────────────────────────────────────────────────
+
+def test_join_between_lazyframe_returns_lazyframe(units, intervals):
+    """join_between on a LazyFrame returns a LazyFrame."""
+    result = units.lazy().vec.join_between(
+        other=intervals,
+        values="event_times",
+        bounds=("start_time", "stop_time"),
+    )
+    assert isinstance(result, pl.LazyFrame)
+
+
+def test_join_between_lazyframe_other_returns_eager_when_self_is_eager(units, intervals):
+    """Return type follows self: eager self + lazy other → DataFrame."""
+    result = units.vec.join_between(
+        other=intervals.lazy(),
+        values="event_times",
+        bounds=("start_time", "stop_time"),
+    )
+    assert isinstance(result, pl.DataFrame)
+
+
+def test_join_between_lazyframe_results_match_eager(units, intervals):
+    """LazyFrame and eager DataFrame produce identical results after collect."""
+    eager = units.vec.join_between(
+        other=intervals,
+        values="event_times",
+        bounds=("start_time", "stop_time"),
+    ).sort("event_id", "interval_id")
+
+    lazy = units.lazy().vec.join_between(
+        other=intervals,
+        values="event_times",
+        bounds=("start_time", "stop_time"),
+    ).collect().sort("event_id", "interval_id")
+
+    assert eager.equals(lazy)
+
+
+def test_join_between_lazyframe_as_counts_matches_eager(units, intervals):
+    """LazyFrame as_counts result matches eager after collect."""
+    eager = units.vec.join_between(
+        other=intervals,
+        values="event_times",
+        bounds=("start_time", "stop_time"),
+        as_counts=True,
+    ).sort("event_id", "interval_id")
+
+    lazy = units.lazy().vec.join_between(
+        other=intervals,
+        values="event_times",
+        bounds=("start_time", "stop_time"),
+        as_counts=True,
+    ).collect().sort("event_id", "interval_id")
+
+    assert eager.equals(lazy)
+
+
+def test_join_between_both_lazy_results_match_eager(units, intervals):
+    """Both self and other as LazyFrame produce the same result as eager."""
+    eager = units.vec.join_between(
+        other=intervals,
+        values="event_times",
+        bounds=("start_time", "stop_time"),
+    ).sort("event_id", "interval_id")
+
+    lazy = units.lazy().vec.join_between(
+        other=intervals.lazy(),
+        values="event_times",
+        bounds=("start_time", "stop_time"),
+    ).collect().sort("event_id", "interval_id")
+
+    assert eager.equals(lazy)
+
+
+def test_join_between_keyed_lazy_matches_eager(session_units, session_intervals):
+    eager = session_units.vec.join_between(
+        other=session_intervals,
+        values="event_times",
+        bounds=("start_time", "stop_time"),
+        on="session_id",
+    ).sort("event_id", "interval_id")
+
+    lazy = session_units.lazy().vec.join_between(
+        other=session_intervals.lazy(),
+        values="event_times",
+        bounds=("start_time", "stop_time"),
+        on="session_id",
+    ).collect().sort("event_id", "interval_id")
+
+    assert eager.equals(lazy)
 
 
 # ── Single-row edge cases ─────────────────────────────────────────────────────

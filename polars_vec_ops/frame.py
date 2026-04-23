@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -25,6 +26,9 @@ class VecOpsNamespace:
         values: IntoExprColumn,
         bounds: tuple[IntoExpr, IntoExpr],
         *,
+        on: str | pl.Expr | Sequence[str | pl.Expr] | None = None,
+        left_on: str | pl.Expr | Sequence[str | pl.Expr] | None = None,
+        right_on: str | pl.Expr | Sequence[str | pl.Expr] | None = None,
         relative: bool = False,
         as_counts: bool = False,
         allow_parallel: bool = True,
@@ -32,7 +36,7 @@ class VecOpsNamespace:
         check_sortedness: bool = True,
     ) -> FrameType:
         """
-        Cross-join with an intervals table, clipping a list or array column to each interval.
+        Join with an intervals table, clipping a list or array column to each interval.
 
         Performs a cross join of ``self`` × ``other``, clips each row's ``values``
         list to the half-open window ``[start, stop)`` defined by ``bounds``.
@@ -52,6 +56,12 @@ class VecOpsNamespace:
             Two-element tuple ``(start, stop)`` where each element is a column
             name or expression in ``other`` resolving to a scalar, or a literal value.
             Defines the half-open window ``[start, stop)`` applied to ``values``.
+        on
+            Join key or keys present in both frames. When provided, only
+            matching rows are paired, following regular inner-join semantics.
+        left_on, right_on
+            Join key or keys to match between ``self`` and ``other`` when the
+            column names differ. Mutually exclusive with ``on``.
         relative
             If ``True``, shift retained values by ``-start`` so they are
             expressed relative to interval onset.  Default: ``False``
@@ -78,9 +88,11 @@ class VecOpsNamespace:
         Returns
         -------
         pl.DataFrame | pl.LazyFrame
-            Shape ``(n_self_rows * n_other_rows, ...)``.  Columns from ``self``
+            Without join keys, shape ``(n_self_rows * n_other_rows, ...)``.
+            With join keys, one row per matched pair. Columns from ``self``
             appear first (with ``values`` replaced), followed by columns from
-            ``other``.  The column resolved by ``values`` is replaced with either:
+            ``other`` using Polars join-column semantics. The column resolved by
+            ``values`` is replaced with either:
 
             - ``list[T]`` — clipped values (absolute coordinates by default,
               or shifted by ``-start`` when ``relative=True``), when
@@ -193,6 +205,46 @@ class VecOpsNamespace:
         start_expr = _to_expr(bounds[0])
         stop_expr  = _to_expr(bounds[1])
 
+        def _parse_join_keys(
+            raw: str | pl.Expr | Sequence[str | pl.Expr],
+        ) -> list[str | pl.Expr]:
+            if isinstance(raw, (str, pl.Expr)):
+                raw_items = [raw]
+            elif isinstance(raw, Sequence):
+                raw_items = list(raw)
+            else:
+                raise TypeError(
+                    "join keys must be a column name, expression, or sequence of those"
+                )
+
+            join_key_items: list[str | pl.Expr] = []
+            for item in raw_items:
+                if not isinstance(item, (str, pl.Expr)):
+                    raise TypeError(
+                        "join keys must be a column name, expression, or sequence of those"
+                    )
+                join_key_items.append(item)
+
+            return join_key_items
+
+        def _normalise_join_keys() -> tuple[list[str | pl.Expr], list[str | pl.Expr]] | None:
+            if on is not None:
+                if left_on is not None or right_on is not None:
+                    raise ValueError(
+                        "cannot specify both `on` and `left_on`/`right_on`"
+                    )
+                parsed = _parse_join_keys(on)
+                return parsed, parsed
+
+            if left_on is None and right_on is None:
+                return None
+            if left_on is None or right_on is None:
+                raise ValueError("`left_on` and `right_on` must both be provided")
+
+            return _parse_join_keys(left_on), _parse_join_keys(right_on)
+
+        join_keys = _normalise_join_keys()
+
         # ── Collect lazy inputs ─────────────────────────────────────────────
         df_eager    = df.collect()    if is_lazy                    else df
         other_eager = other.collect() if isinstance(other, pl.LazyFrame) else other
@@ -256,6 +308,65 @@ class VecOpsNamespace:
             out_inner = inner_dtype
 
         return_dtype: PolarsDataType = pl.UInt32 if as_counts else pl.List(out_inner)
+
+        if join_keys is not None:
+            _TEMP_LEFT_IDX = "__vec_jb_left_idx__"
+            _TEMP_RIGHT_IDX = "__vec_jb_right_idx__"
+
+            df_joinable = df_work.with_row_index(_TEMP_LEFT_IDX)
+            other_joinable = other_with_bounds.with_row_index(_TEMP_RIGHT_IDX)
+
+            if on is not None:
+                joined = df_joinable.join(
+                    other_joinable,
+                    on=on,
+                    how="inner",
+                )
+            else:
+                joined = df_joinable.join(
+                    other_joinable,
+                    left_on=left_on,
+                    right_on=right_on,
+                    how="inner",
+                )
+
+            joined = joined.sort([_TEMP_LEFT_IDX, _TEMP_RIGHT_IDX])
+
+            clip_expr = register_plugin_function(
+                args=[pl.col(_TEMP_VAL), pl.col(_TEMP_START), pl.col(_TEMP_STOP)],
+                plugin_path=_LIB,
+                function_name="list_clip",
+                is_elementwise=True,
+                returns_scalar=False,
+                kwargs={"relative": relative, "as_counts": as_counts},
+            )
+
+            if not as_counts and return_dtype != pl.List(pl.Float64):
+                clip_expr = clip_expr.cast(return_dtype)
+
+            result = joined.with_columns(clip_expr.alias(val_col_name))
+
+            if as_counts:
+                result = result.with_columns(
+                    pl.when(pl.col(val_col_name).is_null())
+                    .then(pl.lit(None).cast(pl.UInt32))
+                    .otherwise(pl.col(val_col_name).list.len().cast(pl.UInt32))
+                    .alias(val_col_name)
+                )
+
+            result = result.drop(
+                [
+                    _TEMP_VAL,
+                    _TEMP_START,
+                    _TEMP_STOP,
+                    _TEMP_LEFT_IDX,
+                    _TEMP_RIGHT_IDX,
+                ]
+            )
+
+            if is_lazy:
+                return result.lazy()
+            return result
 
         # ── Call cross_clip_series Rust plugin (no cross-join!) ───────────────
         # Passes starts/stops as Series inputs (avoids kwargs serialization overhead).
