@@ -244,6 +244,8 @@ class VecOpsNamespace:
             return _parse_join_keys(left_on), _parse_join_keys(right_on)
 
         join_keys = _normalise_join_keys()
+        if join_keys is not None and len(join_keys[0]) != len(join_keys[1]):
+            raise ValueError("`left_on` and `right_on` must have the same number of keys")
 
         # ── Collect lazy inputs ─────────────────────────────────────────────
         df_eager    = df.collect()    if is_lazy                    else df
@@ -312,57 +314,164 @@ class VecOpsNamespace:
         if join_keys is not None:
             _TEMP_LEFT_IDX = "__vec_jb_left_idx__"
             _TEMP_RIGHT_IDX = "__vec_jb_right_idx__"
+            _TEMP_LEFT_GROUP = "__vec_jb_left_group__"
+            _TEMP_RIGHT_GROUP = "__vec_jb_right_group__"
 
-            df_joinable = df_work.with_row_index(_TEMP_LEFT_IDX)
-            other_joinable = other_with_bounds.with_row_index(_TEMP_RIGHT_IDX)
+            def _join_expr(raw: str | pl.Expr, alias: str) -> pl.Expr:
+                return _to_expr(raw).alias(alias)
+
+            def _counts_from_clipped(clipped: pl.Series) -> pl.Series:
+                return (
+                    clipped
+                    .to_frame()
+                    .select(
+                        pl.when(pl.col(val_col_name).is_null())
+                        .then(pl.lit(None).cast(pl.UInt32))
+                        .otherwise(pl.col(val_col_name).list.len().cast(pl.UInt32))
+                        .alias(val_col_name)
+                    )
+                    [val_col_name]
+                )
+
+            left_key_names = [
+                f"__vec_jb_left_key_{idx}__"
+                for idx in range(len(join_keys[0]))
+            ]
+            right_key_names = [
+                f"__vec_jb_right_key_{idx}__"
+                for idx in range(len(join_keys[1]))
+            ]
+            left_key_exprs = [
+                _join_expr(raw, alias)
+                for raw, alias in zip(join_keys[0], left_key_names)
+            ]
+            right_key_exprs = [
+                _join_expr(raw, alias)
+                for raw, alias in zip(join_keys[1], right_key_names)
+            ]
+
+            df_no_val = df_eager.drop(val_col_name) if val_col_name in df_eager.columns else df_eager
+            other_data_cols = [c for c in other_with_bounds.columns if c not in (_TEMP_START, _TEMP_STOP)]
+            other_data = other_with_bounds.select(other_data_cols)
+
+            left_meta = df_no_val.with_row_index(_TEMP_LEFT_IDX)
+            right_meta = other_data.with_row_index(_TEMP_RIGHT_IDX)
 
             if on is not None:
-                joined = df_joinable.join(
-                    other_joinable,
+                joined_meta = left_meta.join(
+                    right_meta,
                     on=on,
                     how="inner",
                 )
             else:
-                joined = df_joinable.join(
-                    other_joinable,
+                joined_meta = left_meta.join(
+                    right_meta,
                     left_on=left_on,
                     right_on=right_on,
                     how="inner",
                 )
 
-            joined = joined.sort([_TEMP_LEFT_IDX, _TEMP_RIGHT_IDX])
+            joined_meta = joined_meta.sort([_TEMP_LEFT_IDX, _TEMP_RIGHT_IDX])
 
-            clip_expr = register_plugin_function(
-                args=[pl.col(_TEMP_VAL), pl.col(_TEMP_START), pl.col(_TEMP_STOP)],
-                plugin_path=_LIB,
-                function_name="list_clip",
-                is_elementwise=True,
-                returns_scalar=False,
-                kwargs={"relative": relative, "as_counts": as_counts},
+            values_only = df_work.select(_TEMP_VAL)
+
+            left_group_source = df_work.with_row_index(_TEMP_LEFT_IDX).with_columns(left_key_exprs)
+            right_group_source = other_with_bounds.with_row_index(_TEMP_RIGHT_IDX).with_columns(right_key_exprs)
+
+            left_groups = (
+                left_group_source
+                .select(_TEMP_LEFT_IDX, *left_key_names)
+                .group_by(left_key_names, maintain_order=True)
+                .agg(pl.col(_TEMP_LEFT_IDX).alias(_TEMP_LEFT_GROUP))
+            )
+            right_groups = (
+                right_group_source
+                .select(_TEMP_RIGHT_IDX, *right_key_names)
+                .group_by(right_key_names, maintain_order=True)
+                .agg(pl.col(_TEMP_RIGHT_IDX).alias(_TEMP_RIGHT_GROUP))
             )
 
-            if not as_counts and return_dtype != pl.List(pl.Float64):
-                clip_expr = clip_expr.cast(return_dtype)
+            matched_groups = left_groups.join(
+                right_groups,
+                left_on=left_key_names,
+                right_on=right_key_names,
+                how="inner",
+            )
 
-            result = joined.with_columns(clip_expr.alias(val_col_name))
+            clipped_chunks: list[pl.Series] = []
+            left_index_chunks: list[np.ndarray] = []
+            right_index_chunks: list[np.ndarray] = []
 
-            if as_counts:
-                result = result.with_columns(
-                    pl.when(pl.col(val_col_name).is_null())
-                    .then(pl.lit(None).cast(pl.UInt32))
-                    .otherwise(pl.col(val_col_name).list.len().cast(pl.UInt32))
-                    .alias(val_col_name)
+            for left_idx_group, right_idx_group in matched_groups.select(
+                _TEMP_LEFT_GROUP,
+                _TEMP_RIGHT_GROUP,
+            ).iter_rows():
+                left_idx_array = np.asarray(left_idx_group, dtype=np.uint32)
+                right_idx_array = np.asarray(right_idx_group, dtype=np.uint32)
+
+                right_idx_series = pl.Series(right_idx_array)
+                bucket_clip_expr = register_plugin_function(
+                    args=[
+                        pl.col(_TEMP_VAL),
+                        pl.lit(starts_series[right_idx_series]),
+                        pl.lit(stops_series[right_idx_series]),
+                    ],
+                    plugin_path=_LIB,
+                    function_name="cross_clip_series",
+                    is_elementwise=False,
+                    returns_scalar=False,
+                    kwargs={"relative": relative},
                 )
 
-            result = result.drop(
-                [
-                    _TEMP_VAL,
-                    _TEMP_START,
-                    _TEMP_STOP,
-                    _TEMP_LEFT_IDX,
-                    _TEMP_RIGHT_IDX,
-                ]
-            )
+                if not as_counts and return_dtype != pl.List(pl.Float64):
+                    bucket_clip_expr = bucket_clip_expr.cast(return_dtype)
+
+                left_idx_series = pl.Series(left_idx_array)
+                clipped_chunk = values_only[left_idx_series].select(
+                    bucket_clip_expr.alias(val_col_name)
+                )[val_col_name]
+
+                if as_counts:
+                    clipped_chunk = _counts_from_clipped(clipped_chunk)
+
+                clipped_chunks.append(clipped_chunk)
+                left_index_chunks.append(
+                    np.repeat(left_idx_array, len(right_idx_array))
+                )
+                right_index_chunks.append(
+                    np.tile(right_idx_array, len(left_idx_array))
+                )
+
+            if clipped_chunks:
+                clipped_series = pl.concat(
+                    [chunk.to_frame() for chunk in clipped_chunks],
+                    how="vertical",
+                )[val_col_name]
+
+                left_indices = np.concatenate(left_index_chunks)
+                right_indices = np.concatenate(right_index_chunks)
+                order = pl.Series(
+                    np.lexsort((right_indices, left_indices)).astype(np.uint32)
+                )
+                clipped_series = clipped_series[order]
+            else:
+                clipped_series = pl.Series(val_col_name, [], dtype=return_dtype)
+
+            left_cols = list(df_no_val.columns)
+            right_cols = [
+                c
+                for c in joined_meta.columns
+                if c not in left_cols and c not in (_TEMP_LEFT_IDX, _TEMP_RIGHT_IDX)
+            ]
+
+            result_parts: list[pl.DataFrame] = []
+            if left_cols:
+                result_parts.append(joined_meta.select(left_cols))
+            result_parts.append(pl.DataFrame({val_col_name: clipped_series}))
+            if right_cols:
+                result_parts.append(joined_meta.select(right_cols))
+
+            result = pl.concat(result_parts, how="horizontal")
 
             if is_lazy:
                 return result.lazy()
