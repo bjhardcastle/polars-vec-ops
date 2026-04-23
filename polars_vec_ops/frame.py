@@ -474,8 +474,8 @@ class VecOpsNamespace:
             result = pl.concat(result_parts, how="horizontal")
 
             if is_lazy:
-                return result.lazy()
-            return result
+                return result.lazy()  # type: ignore[return-value]
+            return result  # type: ignore[return-value]
 
         # ── Call cross_clip_series Rust plugin (no cross-join!) ───────────────
         # Passes starts/stops as Series inputs (avoids kwargs serialization overhead).
@@ -550,5 +550,5 @@ class VecOpsNamespace:
             result = pl.concat([clipped_df, other_tiled], how="horizontal")
 
         if is_lazy:
-            return result.lazy()
-        return result
+            return result.lazy()  # type: ignore[return-value]
+        return result  # type: ignore[return-value]
